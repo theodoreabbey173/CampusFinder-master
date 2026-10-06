@@ -29,6 +29,7 @@ import {
   formatCalendarDate,
   getItemStatus,
   ITEM_STATUS,
+  ITEM_STATUS_LABELS,
 } from '../backend/itemsService';
 import ScreenHeader from '../components/ScreenHeader';
 import { useTheme, useThemedStyles } from '../theme/ThemeContext';
@@ -128,7 +129,7 @@ export default function MyReportedItems({ navigation, route }) {
     const accentColor = isLost ? colors.lost : colors.green;
     const tagBg       = isLost ? colors.tintLost : colors.tintGreen;
     const status      = getItemStatus(item);
-    const resolved    = status === ITEM_STATUS.RESOLVED;
+    const returned    = status === ITEM_STATUS.RETURNED;
     const isDeleting  = deletingId === item.id;
 
     return (
@@ -183,11 +184,11 @@ export default function MyReportedItems({ navigation, route }) {
           <View
             style={[
               styles.statusPill,
-              { backgroundColor: resolved ? colors.tintGreen : colors.tintOrange },
+              { backgroundColor: returned ? colors.tintGreen : colors.tintOrange },
             ]}
           >
-            <Text style={[styles.statusText, { color: resolved ? colors.green : colors.orange }]}>
-              {status}
+            <Text style={[styles.statusText, { color: returned ? colors.green : colors.orange }]}>
+              {ITEM_STATUS_LABELS[status]}
             </Text>
           </View>
 

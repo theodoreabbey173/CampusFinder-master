@@ -29,15 +29,17 @@ CampusFinder is a comprehensive lost and found solution specifically designed fo
 - **Item Reporting System**: Easy-to-use forms for reporting both lost and found items with image upload
 - **Visual Item Browse**: Browse items with images, live Lost/Found stats, search, and filters
 - **Secure Communication**: Encrypted chat system for user safety
-- **User Authentication**: Firebase-backed sign-up, login, and email verification
+- **Confirmed Handover & Returns**: An item is marked as returned only after the other student confirms the handover in chat; returned items move to a "Returned" filter and the chat becomes read-only
+- **User Authentication**: Firebase-backed sign-up, login, email verification by link, and "Forgot password?" reset emails
+- **Verified-only Access**: Firestore rules only let users with a verified email read or write items, chats and messages
 - **Inbox / Chat Management**: Centralised inbox to view and manage all active conversations
 - **Account / Profile Tab**: View profile info, reported items count, and account settings
 - **Dark Mode**: App-wide light/dark theme, toggled from the Account tab and remembered between launches
-- **My Reported Items**: Manage your own reports — view details, mark as resolved, or delete
+- **My Reported Items**: Manage your own reports — view details, see Open / Returned status, or delete
 - **Privacy & Safety Settings**: Anonymous posting, password reset, account deletion, and safety guidelines
 - **Help & Support**: Expandable FAQs plus one-tap Contact Support, Report a Problem, and Send Feedback
 - **Location & Category Tagging**: Items are tagged with a campus location, a category, and the date lost/found
-- **Push Notifications**: Stay updated on new items and messages
+- **Message Notifications**: In-app toast for new messages while a chat is open, and a local notification when the app is in the background
 - **Real-time Updates**: Firebase-powered live data syncing
 - **Icon-Based UI**: Consistent `lucide-react-native` iconography throughout — no emoji in the app UI
 
@@ -46,37 +48,44 @@ CampusFinder is a comprehensive lost and found solution specifically designed fo
 The application follows three main user flows:
 
 ### 1. Sign Up & Onboarding Flow
-- **SignUp Screen**: User registration with name, email, and password
-- **Login Screen**: Existing user sign-in
-- **Verification Screen**: 4-digit email verification code input
+- **SignUp Screen**: User registration with name, email, and password; a verification link is emailed on sign-up
+- **Login Screen**: Existing user sign-in, plus **Forgot password?** which emails a reset link to the address in the email field
+- **Verification Screen**: Asks the user to click the link in their email, then tap **Verify & continue** (with a resend option)
 - **Welcome Screen**: App introduction and feature overview
 
-> Firebase Auth state determines the initial route automatically:
+> Firebase Auth state determines the initial route automatically (`onIdTokenChanged` in `App.js`):
 > - Not signed in → Auth screens (SignUp / Login)
 > - Signed in but email unverified → Verification screen
 > - Signed in & verified → Full app
+>
+> After the link is clicked, **Verify & continue** reloads the user and forces an ID-token refresh, so the
+> `email_verified` claim the Firestore rules check is up to date and the app moves to the Welcome screen
+> without a restart.
 
 ### 2. Main App (Bottom Tabs)
 `MainTabs.js` hosts three tabs, each backed by a dedicated screen:
-- **Browse** (`ListScreen`): Live Lost/Found stats, search, filter pills, and a floating **+ Report** button
+- **Browse** (`ListScreen`): Live Lost/Found stats, search, filter pills (All / Lost / Found show open items; **Returned** shows returned ones), and a floating **+ Report** button
 - **Chats** (`InboxScreen`): Overview of all active chat conversations
 - **You** (`ProfileScreen`): Account info, Dark mode toggle, and links to the account screens below
 
 ### 3. Lost & Found Reporting Flow
-- **Details Screen**: Item information (status, category, location, date) and contact options. On your own report it shows **Mark as Resolved / Reopen** and **Delete Report** instead of chat
+- **Details Screen**: Live item information (status, return date, category, location, date) and a **Start Secure Chat** button. On your own report it shows **Delete Report** and a hint on how to mark it returned. For a returned item, the other student can still **Open Chat** to read the history
 - **Report Item Screen**: Form to report lost or found items — name, description, category, location, date, and optional photo — with required-field validation
-- **Confirmation Screen**: Report submission success confirmation with safety tips
 
 ### 4. Account & Safety Flow (from the You tab)
-- **My Reported Items** (`MyReportedItems`): Live list of the signed-in user's reports showing image, name, description, date reported, and status (Open / Resolved). Includes a **Report Item** button, delete with confirmation, and loading / empty / error / success states
+- **My Reported Items** (`MyReportedItems`): Live list of the signed-in user's reports showing image, name, description, date reported, and status (Open / Returned). Includes a **Report Item** button, delete with confirmation, and loading / empty / error / success states
 - **Privacy & Safety** (`PrivacyAndSafety`):
   - *Privacy*: "Show my name on reports" toggle (off = post as Anonymous), who can see your items, location & device permissions, how your data is used
   - *Safety*: Report a user or content, safety guidelines, account security (email verification status); blocked users is marked *Coming soon*
   - *Account & data*: Change password (Firebase reset email), request my data, delete account (password-confirmed)
 - **Help & Support** (`HelpAndSupport`): Expandable FAQs, contact options that open a pre-filled support email, and safety information
 
-### 5. Secure Communication Flow
-- **Chat Screen**: Encrypted real-time messaging between users, launched from Browse or Chats
+### 5. Secure Communication & Return Flow
+- **Chat Screen**: Encrypted real-time messaging between users, launched from an item's details or from Chats. The header shows the other student's name and "About: {item name}"
+- **Handover**: After meeting, the student who is *not* the reporter taps **Confirm handover** (once, can't be undone)
+- **Return**: The reporter's **Mark as returned** button unlocks only after that confirmation. Marking it returned updates the item, shows a "Returned" banner, and makes the chat read-only
+- **Confirmation Screen**: "Item returned" confirmation with what happens next and safety tips
+- **Names**: New chats store both participants' names (display name, or the part of the email before the @). Older chats without a stored name show "Student"
 
 ## 🛠️ Tools & Technologies Used
 
@@ -85,7 +94,9 @@ The application follows three main user flows:
 - **Expo**: Development platform including image picker and push notifications
 
 ### Backend & Database
-- **Firebase**: Authentication, real-time database, and cloud storage
+- **Firebase Authentication**: Email/password accounts, verification links, and password-reset emails
+- **Cloud Firestore**: Real-time data for users, items, chats and messages, protected by `firestore.rules`
+- **Cloudinary**: Image hosting for item photos (unsigned upload preset)
 - **firebase/auth**: `onIdTokenChanged` listener for live auth state management
 
 ### Navigation
@@ -134,7 +145,8 @@ The process is illustrated beginning on the left side of the diagram.
 - npm or yarn package manager
 - Expo CLI
 - Expo Go app on your mobile device
-- A Firebase project (Authentication + Firestore/Realtime Database enabled)
+- A Firebase project with **Email/Password** sign-in enabled and a **Cloud Firestore** database
+- A Cloudinary account with an unsigned upload preset (for item photos)
 
 ### Installation
 
@@ -150,10 +162,12 @@ The process is illustrated beginning on the left side of the diagram.
    ```
 
 3. **Configure Firebase**  
-   Create a `firebaseConfig.js` file in the project root and add your Firebase project credentials:
+   Create a `firebaseConfig.js` file in the project root with your Firebase project credentials. It must export both `auth` and `db`, because the files in `backend/` import both:
    ```js
    import { initializeApp } from 'firebase/app';
-   import { getAuth } from 'firebase/auth';
+   import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
+   import { getFirestore } from 'firebase/firestore';
+   import AsyncStorage from '@react-native-async-storage/async-storage';
 
    const firebaseConfig = {
      apiKey: "YOUR_API_KEY",
@@ -165,21 +179,31 @@ The process is illustrated beginning on the left side of the diagram.
    };
 
    const app = initializeApp(firebaseConfig);
-   export const auth = getAuth(app);
+   const auth = initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
+   const db = getFirestore(app);
+
+   export { auth, db };
+   export default app;
    ```
 
-4. **Set the support email**  
+4. **Publish the Firestore security rules**  
+   Copy the contents of `firestore.rules`, then in the Firebase console go to **Firestore Database → Rules**, paste over the existing rules, and click **Publish**. The app expects these rules: without them, sign-up profile writes and the handover/return flow will not behave as described.
+
+5. **Configure Cloudinary**  
+   Fill in `CLOUDINARY_CLOUD_NAME` and `CLOUDINARY_UPLOAD_PRESET` in `cloudinaryConfig.js`.
+
+6. **Set the support email**  
    Open `supportConfig.js` and replace `SUPPORT_EMAIL` with the inbox your team monitors. Help & Support and Privacy & Safety send emails there.
    ```js
    export const SUPPORT_EMAIL = 'your-support-inbox@example.com';
    ```
 
-5. **Start the development server**
+7. **Start the development server**
    ```bash
    npx expo start
    ```
 
-6. **Run on device**
+8. **Run on device**
    - Scan the QR code with Expo Go app (Android)
    - Scan with Camera app (iOS)
 
@@ -195,8 +219,8 @@ CampusFinder/
 ├── assets/                         # App icons, splash screen, and images
 ├── backend/
 │   ├── authService.js              # Sign up / login / verification / password reset / account deletion
-│   ├── chatService.js              # Chat creation, messaging, subscriptions
-│   ├── itemsService.js             # Item CRUD, per-user subscriptions, categories & status
+│   ├── chatService.js              # Chat creation, encrypted messaging, handover confirmation, subscriptions
+│   ├── itemsService.js             # Item CRUD, live subscriptions, categories, status & mark-as-returned
 │   ├── notificationService.js      # Push notification registration & badges
 │   ├── settingsService.js          # Per-user privacy settings (AsyncStorage)
 │   ├── storageService.js           # Cloudinary image uploads
@@ -219,12 +243,12 @@ CampusFinder/
 │   ├── DetailsScreen.js            # Individual item details
 │   ├── ReportItemScreen.js         # Report new items (with image picker)
 │   ├── InboxScreen.js              # Chats tab — all active chat conversations
-│   ├── ChatScreen.js               # Secure real-time messaging
+│   ├── ChatScreen.js               # Secure real-time messaging, handover & mark as returned
 │   ├── ProfileScreen.js            # You tab — account info, dark mode & settings links
 │   ├── MyReportedItems.js          # Manage your own reports
 │   ├── PrivacyAndSafety.js         # Privacy, safety & account settings
 │   ├── HelpAndSupport.js           # FAQs, contact support & safety info
-│   └── ConfirmationScreen.js       # Report submission success
+│   └── ConfirmationScreen.js       # "Item returned" confirmation
 ├── firestore.rules                 # Firestore security rules
 ├── package.json
 └── README.md
@@ -254,35 +278,65 @@ const createStyles = (c) => StyleSheet.create({
 
 New screens that follow this pattern support dark mode automatically.
 
-## 🗂️ Item Data Model
+## 🗂️ Data Model
 
-Firestore `items` documents:
+### `users/{uid}`
+
+Written at sign-up and updated when the email is verified. Each user can only read and write their own document.
+
+| Field | Description |
+|---|---|
+| `uid` | Must equal the document id and the signed-in user's uid |
+| `name`, `email` | From the sign-up form |
+| `emailVerified` | Kept in sync for reference only — access control uses the ID token's `email_verified` claim |
+| `createdAt` | Server timestamp |
+
+### `items/{itemId}`
 
 | Field | Description |
 |---|---|
 | `name`, `description`, `location` | Entered in the report form |
 | `type` | `Lost` or `Found` |
-| `category` | e.g. Electronics, Bags, Keys, ID & Cards (new) |
-| `occurredAt` | Date the item was lost/found (new) |
-| `status` | `Open` or `Resolved` (new) |
+| `category` | e.g. Electronics, Bags, Keys, ID & Cards |
+| `occurredAt` | Date the item was lost/found |
+| `status` | `open` or `returned` |
+| `returnedAt`, `returnedTo`, `returnedChatId` | Set when the item is marked returned: time, uid of the other student, and the chat holding the handover confirmation |
 | `imageUrl` | Cloudinary URL or `null` |
 | `reportedBy`, `reporterName` | Owner uid and display name (`Anonymous` if the user hides their name) |
 | `createdAt` | Server timestamp |
 
-Reports created before `category`, `occurredAt` and `status` existed still work: they are treated as `Open` and the missing fields are hidden.
+Older reports still work: a missing `status` or legacy `Open` counts as `open`, legacy `Resolved` counts as `returned`, and missing `category` / `occurredAt` are hidden.
+
+### `chats/{chatId}`
+
+| Field | Description |
+|---|---|
+| `participants` | The two uids in the conversation |
+| `participantNames` | `{ uid: name }` for both participants |
+| `reporterUid` | uid of the item's reporter |
+| `itemId`, `itemName` | The item the chat is about |
+| `lastMessage`, `lastMessageTime` | Encrypted preview and time of the latest message |
+| `handover` | `{ confirmedBy, confirmedAt }` — set once by the non-reporter after the item changes hands |
+| `createdAt` | Server timestamp |
+
+Messages live in `chats/{chatId}/messages` with `text` (encrypted), `senderId`, `senderName` and `timestamp`. They cannot be edited or deleted.
 
 
 
 
 ## 🔐 Security Features
 
-- **Firebase Authentication**: Secure email/password auth with email verification gate
+- **Firebase Authentication**: Secure email/password auth with an email verification gate in the app
+- **Verification Enforced Server-side**: Firestore rules require a verified email (`email_verified` token claim) for every read and write on items, chats and messages
+- **Private Profiles**: A user can only read and write their own `users` document; profiles cannot be deleted
 - **Encrypted Communication**: Messages secured with CryptoJS before transmission
 - **Privacy Protection**: User information is kept confidential; emails are never shown publicly
 - **Anonymous Reporting**: Option to post new reports as "Anonymous"
 - **Owner-only Changes**: Firestore rules let only the reporter edit or delete their item
-- **Password Reset**: Firebase password-reset email from Privacy & Safety
-- **Account Deletion**: Password-confirmed; removes the user's reports, profile, and login
+- **Tamper-resistant Returns**: Rules only allow an item to become `returned` through a chat about that item where the other participant confirmed the handover; after that, the return fields are locked
+- **Locked-down Chats**: Only the two participants can read a chat; updates are limited to the message preview and a one-time handover confirmation; chats and messages cannot be deleted
+- **Password Reset**: Firebase password-reset email from the login screen ("Forgot password?") or Privacy & Safety, with a neutral message that doesn't reveal whether an account exists
+- **Account Deletion**: Password-confirmed; removes the user's reports and login
 - **Safe Meeting Guidelines**: In-app safety tips for user meetings
 - **Report System**: Users can report inappropriate behaviour or content to support
 
@@ -294,7 +348,9 @@ Reports created before `category`, `occurredAt` and `status` existed still work:
 - [ ] Integration with university security
 - [ ] Multi-language support
 - [x] Dark mode theme
-- [x] Manage my reported items (view, resolve, delete)
+- [x] Manage my reported items (view, delete)
+- [x] Confirmed handover before an item is marked returned
+- [x] Forgot-password reset from the login screen
 - [ ] Block users (UI placeholder in Privacy & Safety)
 - [ ] Edit an existing report
 - [ ] Edit profile name / photo
@@ -305,8 +361,10 @@ Reports created before `category`, `occurredAt` and `status` existed still work:
 - Images may take time to load on slower connections
 - Chat requires active internet connection
 - Some features optimised for Android (testing on iOS recommended)
-- `firestore.rules` has no rule for the `users` collection; add one if your deployed rules block profile writes
-- Deleting an account keeps chat history, because chats can't be deleted under the current rules
+- Deleting an account keeps chat history and the `users` profile document, because the rules don't allow deleting either
+- Marking an item returned is final — there is no "reopen" option
+- Chats created before participant names were stored show "Student" instead of a name
+- Users who verified their email shortly before the verification rules were published may see permission errors until they log out and back in
 - Privacy settings are stored on the device, so they don't follow the user to another phone
 
 ## 🤝 Contributing

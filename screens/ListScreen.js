@@ -20,13 +20,16 @@ import {
   SearchX,
   PackageOpen,
   Plus,
+  CheckCircle2,
 } from 'lucide-react-native';
-import { subscribeToItems, formatItemDate } from '../backend/itemsService';
+import { subscribeToItems, formatItemDate, isItemReturned } from '../backend/itemsService';
 import { subscribeToUserChats } from '../backend/chatService';
 import { auth } from '../firebaseConfig';
 import { useTheme, useThemedStyles } from '../theme/ThemeContext';
 
-const FILTERS = ['All', 'Lost', 'Found'];
+// 'All', 'Lost' and 'Found' show open items only; 'Returned' shows the rest.
+const FILTERS = ['All', 'Lost', 'Found', 'Returned'];
+const RETURNED_COLOR = '#4CAF50';
 
 const isNewItem = (createdAt) => {
   if (!createdAt) return false;
@@ -62,16 +65,23 @@ export default function ListScreen({ navigation }) {
     return unsubscribe;
   }, []);
 
-  const stats = useMemo(() => ({
-    total: items.length,
-    lost:  items.filter((i) => i.type === 'Lost').length,
-    found: items.filter((i) => i.type === 'Found').length,
-  }), [items]);
+  const stats = useMemo(() => {
+    const open = items.filter((i) => !isItemReturned(i));
+    return {
+      total:    open.length,
+      lost:     open.filter((i) => i.type === 'Lost').length,
+      found:    open.filter((i) => i.type === 'Found').length,
+      returned: items.length - open.length,
+    };
+  }, [items]);
 
   const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     return items.filter((item) => {
-      const matchesFilter = activeFilter === 'All' || item.type === activeFilter;
+      const returned = isItemReturned(item);
+      const matchesFilter = activeFilter === 'Returned'
+        ? returned
+        : !returned && (activeFilter === 'All' || item.type === activeFilter);
       const matchesSearch =
         !q ||
         item.name?.toLowerCase().includes(q) ||
@@ -85,7 +95,9 @@ export default function ListScreen({ navigation }) {
 
   const renderItem = ({ item }) => {
     const isLost      = item.type === 'Lost';
-    const accentColor = isLost ? '#FF5722' : '#16a97a';
+    const returned    = isItemReturned(item);
+    const typeColor   = isLost ? '#FF5722' : '#16a97a';
+    const accentColor = returned ? RETURNED_COLOR : typeColor;
     const tagBg       = isLost ? colors.tintLost : colors.tintGreen;
 
     return (
@@ -94,7 +106,7 @@ export default function ListScreen({ navigation }) {
         onPress={() => handleItemPress(item)}
         activeOpacity={0.85}
       >
-        {isNewItem(item.createdAt) && (
+        {!returned && isNewItem(item.createdAt) && (
           <View style={styles.newBadge}>
             <Text style={styles.newBadgeText}>NEW</Text>
           </View>
@@ -114,10 +126,17 @@ export default function ListScreen({ navigation }) {
           <View style={styles.itemInfo}>
             <View style={styles.itemHeader}>
               <Text style={styles.itemName} numberOfLines={1}>{item.name}</Text>
-              <View style={[styles.typeTag, { backgroundColor: tagBg }]}>
-                <View style={[styles.typeDot, { backgroundColor: accentColor }]} />
-                <Text style={[styles.typeText, { color: accentColor }]}>{item.type}</Text>
-              </View>
+              {returned ? (
+                <View style={[styles.typeTag, { backgroundColor: colors.tintGreen }]}>
+                  <CheckCircle2 size={11} color={RETURNED_COLOR} strokeWidth={2.6} />
+                  <Text style={[styles.typeText, { color: RETURNED_COLOR }]}>Returned</Text>
+                </View>
+              ) : (
+                <View style={[styles.typeTag, { backgroundColor: tagBg }]}>
+                  <View style={[styles.typeDot, { backgroundColor: typeColor }]} />
+                  <Text style={[styles.typeText, { color: typeColor }]}>{item.type}</Text>
+                </View>
+              )}
             </View>
 
             {item.description ? (
@@ -232,8 +251,17 @@ export default function ListScreen({ navigation }) {
       <View style={styles.filterRow}>
         {FILTERS.map((f) => {
           const isActive = activeFilter === f;
-          const count    = f === 'All' ? stats.total : f === 'Lost' ? stats.lost : stats.found;
-          const tabColor = f === 'Lost' ? '#FF5722' : f === 'Found' ? '#16a97a' : colors.primaryBtn;
+          const count = {
+            All:      stats.total,
+            Lost:     stats.lost,
+            Found:    stats.found,
+            Returned: stats.returned,
+          }[f];
+          const tabColor = {
+            Lost:     '#FF5722',
+            Found:    '#16a97a',
+            Returned: RETURNED_COLOR,
+          }[f] ?? colors.primaryBtn;
           return (
             <TouchableOpacity
               key={f}
@@ -245,7 +273,11 @@ export default function ListScreen({ navigation }) {
               ]}
               onPress={() => setActiveFilter(f)}
             >
-              <Text style={[styles.filterTabText, isActive && { color: '#fff' }]}>
+              <Text
+                style={[styles.filterTabText, isActive && { color: '#fff' }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+              >
                 {f} · {count}
               </Text>
             </TouchableOpacity>
@@ -262,12 +294,16 @@ export default function ListScreen({ navigation }) {
               : <PackageOpen size={56} color={colors.emptyIcon} strokeWidth={1.6} style={styles.emptyIcon} />
             }
             <Text style={styles.emptyTitle}>
-              {searchQuery ? 'No results found' : 'No items yet'}
+              {searchQuery
+                ? 'No results found'
+                : activeFilter === 'Returned' ? 'No returned items yet' : 'No items yet'}
             </Text>
             <Text style={styles.emptySubtitle}>
               {searchQuery
                 ? `Nothing matched "${searchQuery}". Try a different keyword.`
-                : 'Be the first to report a lost or found item on campus!'}
+                : activeFilter === 'Returned'
+                  ? 'Items appear here once both students confirm the handover.'
+                  : 'Be the first to report a lost or found item on campus!'}
             </Text>
             {searchQuery ? (
               <TouchableOpacity style={styles.clearSearchBtn} onPress={() => setSearchQuery('')}>
@@ -504,6 +540,7 @@ const createStyles = (c) => StyleSheet.create({
   filterTab: {
     flex: 1,
     paddingVertical: 8,
+    paddingHorizontal: 4,
     borderRadius: 22,
     borderWidth: 1.5,
     alignItems: 'center',

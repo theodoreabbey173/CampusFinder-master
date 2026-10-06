@@ -32,7 +32,8 @@ const FAQS = [
   },
   {
     q: 'How do I mark an item as returned?',
-    a: 'Open the report from You → My reported items and tap "Mark as Resolved". You can reopen it at any time.',
+    a: 'After you meet and the item changes hands, the other student taps "Confirm handover" in your chat. ' +
+       'You then tap "Mark as returned" in the same chat. Returned items leave the main list but can still be seen under the "Returned" filter.',
   },
   {
     q: 'How do I edit my account?',

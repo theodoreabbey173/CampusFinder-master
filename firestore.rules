@@ -11,30 +11,141 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Signed-in user whose email address has been verified
+    // (reads the email_verified claim from the ID token)
+    function isVerified() {
+      return request.auth != null
+             && request.auth.token.email_verified == true;
+    }
+
+    // ── Users ─────────────────────────────────────────────────────────────────
+    //   • A user can create, read and update only their own profile
+    //   • The uid field must match the signed-in user
+    //   • No verification required: the profile is written at sign-up
+    //   • Profiles cannot be deleted
+    match /users/{userId} {
+      allow read:           if isLoggedIn()
+                               && request.auth.uid == userId;
+      allow create, update: if isLoggedIn()
+                               && request.auth.uid == userId
+                               && request.resource.data.uid == request.auth.uid;
+      allow delete:         if false;
+    }
+
+    // Status values that count as "open" ('Open' is the legacy spelling)
+    function isOpenStatus(status) {
+      return status in ['open', 'Open'];
+    }
+
     // ── Items ─────────────────────────────────────────────────────────────────
-    //   • Any logged-in user can read all items
-    //   • Only the reporter can create (must set reportedBy to own uid)
+    //   • Any verified user can read all items
+    //   • Only the reporter can create (must set reportedBy to own uid),
+    //     and new items must be open
     //   • Only the reporter can update or delete their item
+    //   • An item can only become 'returned' through a chat about this item
+    //     where the other participant confirmed the handover
+    //   • Once returned (or legacy 'Resolved'), the return fields are locked
     match /items/{itemId} {
-      allow read:           if isLoggedIn();
-      allow create:         if isLoggedIn()
-                               && request.resource.data.reportedBy == request.auth.uid;
-      allow update, delete: if isLoggedIn()
-                               && resource.data.reportedBy == request.auth.uid;
+
+      function returnFields() {
+        return ['status', 'returnedAt', 'returnedTo', 'returnedChatId'];
+      }
+
+      function changedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+
+      // The chat must be about this item, the caller must be its reporter,
+      // and returnedTo must be the participant who confirmed the handover.
+      function handoverAllowsReturn(chat) {
+        return chat.itemId == itemId
+               && chat.reporterUid == request.auth.uid
+               && request.resource.data.returnedTo in chat.participants
+               && chat.handover.confirmedBy == request.resource.data.returnedTo;
+      }
+
+      function isValidReturn() {
+        return changedKeys().hasOnly(returnFields())
+               && request.resource.data.status == 'returned'
+               && request.resource.data.returnedAt == request.time
+               && request.resource.data.returnedTo is string
+               && request.resource.data.returnedTo != request.auth.uid
+               && handoverAllowsReturn(
+                    get(/databases/$(database)/documents/chats/$(request.resource.data.returnedChatId)).data);
+      }
+
+      function wasOpen() {
+        return isOpenStatus(resource.data.get('status', 'open'));
+      }
+
+      function staysOpen() {
+        return isOpenStatus(request.resource.data.get('status', 'open'));
+      }
+
+      function isValidReturnState() {
+        // Open → open: ordinary edit, return fields untouched
+        return (wasOpen() && staysOpen()
+             && !changedKeys().hasAny(['returnedAt', 'returnedTo', 'returnedChatId']))
+          // Open → returned: only with a confirmed handover
+          || (wasOpen() && !staysOpen() && isValidReturn())
+          // Already returned: return fields can no longer change
+          || (!wasOpen() && !changedKeys().hasAny(returnFields()));
+      }
+
+      allow read:   if isVerified();
+      allow create: if isVerified()
+                       && request.resource.data.reportedBy == request.auth.uid
+                       && isOpenStatus(request.resource.data.get('status', 'open'));
+      allow update: if isVerified()
+                       && resource.data.reportedBy == request.auth.uid
+                       && isValidReturnState();
+      allow delete: if isVerified()
+                       && resource.data.reportedBy == request.auth.uid;
     }
 
     // ── Chats ─────────────────────────────────────────────────────────────────
     //   • Only the two participants can read or update a chat document
-    //   • Only a participant can create a new chat
+    //   • A chat is created by the non-reporter about an open item; reporterUid
+    //     must be the item's reporter and no handover may be set at creation
+    //   • Updates may only touch lastMessage, lastMessageTime and handover
+    //   • handover can be set once, only by the participant who is NOT
+    //     reporterUid, with confirmedBy equal to their own uid
     //   • Chats cannot be deleted
     match /chats/{chatId} {
-      allow read,
-            update: if isLoggedIn()
-                       && request.auth.uid in resource.data.participants;
 
-      allow create: if isLoggedIn()
+      function chatChangedKeys() {
+        return request.resource.data.diff(resource.data).affectedKeys();
+      }
+
+      function isValidHandover() {
+        return !('handover' in resource.data)
+               && request.auth.uid != resource.data.reporterUid
+               && request.resource.data.handover.keys().hasOnly(['confirmedBy', 'confirmedAt'])
+               && request.resource.data.handover.confirmedBy == request.auth.uid
+               && request.resource.data.handover.confirmedAt == request.time;
+      }
+
+      function itemAllowsNewChat(itemData) {
+        return itemData.reportedBy == request.resource.data.reporterUid
+               && isOpenStatus(itemData.get('status', 'open'));
+      }
+
+      allow read: if isVerified()
+                     && request.auth.uid in resource.data.participants;
+
+      allow update: if isVerified()
+                       && request.auth.uid in resource.data.participants
+                       && chatChangedKeys().hasOnly(['lastMessage', 'lastMessageTime', 'handover'])
+                       && (!chatChangedKeys().hasAny(['handover']) || isValidHandover());
+
+      allow create: if isVerified()
                        && request.auth.uid in request.resource.data.participants
-                       && request.resource.data.participants.size() == 2;
+                       && request.resource.data.participants.size() == 2
+                       && !('handover' in request.resource.data)
+                       && request.resource.data.reporterUid in request.resource.data.participants
+                       && request.resource.data.reporterUid != request.auth.uid
+                       && itemAllowsNewChat(
+                            get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data);
 
       allow delete: if false;
 
@@ -43,12 +154,12 @@ service cloud.firestore {
       //   • Only a participant can send a message (senderId must equal own uid)
       //   • Messages are immutable once sent
       match /messages/{messageId} {
-        allow read:   if isLoggedIn()
+        allow read:   if isVerified()
                          && request.auth.uid in
                             get(/databases/$(database)/documents/chats/$(chatId))
                               .data.participants;
 
-        allow create: if isLoggedIn()
+        allow create: if isVerified()
                          && request.auth.uid in
                             get(/databases/$(database)/documents/chats/$(chatId))
                               .data.participants

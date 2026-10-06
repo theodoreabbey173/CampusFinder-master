@@ -134,12 +134,23 @@ export const checkEmailVerified = async () => {
   if (!freshUser) return false;
 
   if (freshUser.emailVerified) {
-    // Keep Firestore in sync
-    await setDoc(
-      doc(db, 'users', freshUser.uid),
-      { emailVerified: true },
-      { merge: true },
-    );
+    // reload() does not refresh the ID token, and Firestore rules read the
+    // email_verified claim from the token. Force a refresh so the first
+    // Firestore request after verification is not rejected.
+    await freshUser.getIdToken(true);
+
+    // Keep Firestore in sync (best-effort — must never block a verified user).
+    // uid is included so the write passes the users rule even when the
+    // profile document does not exist yet.
+    try {
+      await setDoc(
+        doc(db, 'users', freshUser.uid),
+        { uid: freshUser.uid, emailVerified: true },
+        { merge: true },
+      );
+    } catch (err) {
+      console.warn('[checkEmailVerified] could not update user profile:', err?.message);
+    }
     return true;
   }
   return false;
@@ -153,12 +164,15 @@ export const logoutUser = async () => signOut(auth);
 // ─── Account security ─────────────────────────────────────────────────────────
 
 /**
- * Email the signed-in user a Firebase password-reset link.
+ * Email a Firebase password-reset link.
+ *
+ * @param {string} [email]  Address to send to; defaults to the signed-in user's
+ *                          email (used by "Change password" in Privacy & Safety).
  */
-export const sendPasswordReset = async () => {
-  const user = auth.currentUser;
-  if (!user?.email) throw new Error('No signed-in user found. Please sign in again.');
-  await sendPasswordResetEmail(auth, user.email, ACTION_CODE_SETTINGS);
+export const sendPasswordReset = async (email) => {
+  const target = (email ?? auth.currentUser?.email ?? '').trim();
+  if (!target) throw new Error('No email address provided.');
+  await sendPasswordResetEmail(auth, target, ACTION_CODE_SETTINGS);
 };
 
 /**
@@ -197,6 +211,16 @@ export const deleteAccount = async (password) => {
 
 /** Return the currently signed-in Firebase user (or null). */
 export const getCurrentUser = () => auth.currentUser;
+
+/**
+ * Name to show for a user: display name, else the part of the email before
+ * the @, else "Student".
+ *
+ * @param {import('firebase/auth').User|null} user
+ * @returns {string}
+ */
+export const getDisplayName = (user) =>
+  user?.displayName?.trim() || user?.email?.split('@')[0] || 'Student';
 
 /**
  * Fetch a user's profile document from Firestore.

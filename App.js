@@ -34,16 +34,19 @@ export default function App() {
 function AppNavigator() {
   const { colors, isDark, ready: themeReady } = useTheme();
 
-  const [user,         setUser]         = useState(null);
-  const [initializing, setInitializing] = useState(true);
+  const [user,          setUser]          = useState(null);
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [initializing,  setInitializing]  = useState(true);
 
   // Listen for Firebase Auth state changes (login / logout)
   useEffect(() => {
     // onIdTokenChanged fires on sign-in / sign-out AND on token refresh
-    // (which includes the reload() call in checkEmailVerified).
-    // This ensures user.emailVerified is always up-to-date in this component.
+    // (including the forced getIdToken(true) in checkEmailVerified).
+    // reload() mutates the same User object, so setUser alone would not
+    // re-render — emailVerified is tracked as its own value for routing.
     const unsubscribe = onIdTokenChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
+      setEmailVerified(!!firebaseUser?.emailVerified);
       setInitializing(false);
     });
     return unsubscribe; // Clean up on unmount
@@ -98,7 +101,7 @@ function AppNavigator() {
               component={AuthScreen}
               options={{ headerShown: false }}
             />
-          ) : !user.emailVerified ? (
+          ) : !emailVerified ? (
             <Stack.Screen
               name="Verification"
               component={VerificationScreen}

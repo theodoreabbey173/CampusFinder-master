@@ -47,13 +47,14 @@ export default function InboxScreen({ navigation }) {
   // ── Navigate to a chat ──────────────────────────────────────────────────────
   const openChat = (chat) => {
     const otherUid  = chat.participants.find((uid) => uid !== currentUser.uid);
-    const otherName = chat.participantNames?.[otherUid] ?? 'User';
+    // Older chats may lack participantNames — ChatScreen falls back to "Student"
+    const otherName = chat.participantNames?.[otherUid];
 
     const item = {
       id:           chat.itemId,
       name:         chat.itemName,
       reportedBy:   chat.reporterUid,
-      reporterName: chat.participantNames?.[chat.reporterUid] ?? 'User',
+      reporterName: chat.participantNames?.[chat.reporterUid],
     };
 
     navigation.navigate('Chat', {
@@ -67,7 +68,7 @@ export default function InboxScreen({ navigation }) {
   // ── Render one chat row ─────────────────────────────────────────────────────
   const renderChat = ({ item: chat }) => {
     const otherUid  = chat.participants?.find((uid) => uid !== currentUser.uid);
-    const otherName = chat.participantNames?.[otherUid] ?? 'Unknown User';
+    const otherName = chat.participantNames?.[otherUid]?.trim() || 'Student';
     const initial   = (otherName?.[0] ?? '?').toUpperCase();
     const avatarColor = AVATAR_COLORS[initial.charCodeAt(0) % AVATAR_COLORS.length];
 

@@ -13,7 +13,11 @@
  *     type:         'Lost' | 'Found',
  *     category:     string  (one of ITEM_CATEGORIES; optional on older items),
  *     occurredAt:   Timestamp (date the item was lost/found; optional on older items),
- *     status:       'Open' | 'Resolved' (optional on older items → treated as 'Open'),
+ *     status:       'open' | 'returned' (optional on older items → treated as 'open';
+ *                   legacy 'Open' → 'open', legacy 'Resolved' → 'returned'),
+ *     returnedAt:     Timestamp  (set when status becomes 'returned'),
+ *     returnedTo:     string     (uid of the other chat participant),
+ *     returnedChatId: string     (chat whose handover confirmation allowed the return),
  *     imageUrl:     string | null,
  *     reportedBy:   string  (user uid),
  *     reporterName: string,
@@ -51,12 +55,26 @@ export const ITEM_CATEGORIES = [
 ];
 
 export const ITEM_STATUS = {
-  OPEN:     'Open',
-  RESOLVED: 'Resolved',
+  OPEN:     'open',
+  RETURNED: 'returned',
 };
 
-/** Items created before `status` existed are treated as open. */
-export const getItemStatus = (item) => item?.status ?? ITEM_STATUS.OPEN;
+export const ITEM_STATUS_LABELS = {
+  [ITEM_STATUS.OPEN]:     'Open',
+  [ITEM_STATUS.RETURNED]: 'Returned',
+};
+
+/**
+ * Normalised status of an item. Items created before `status` existed (and
+ * legacy 'Open') are open; legacy 'Resolved' items count as returned.
+ */
+export const getItemStatus = (item) => {
+  const status = item?.status;
+  if (status === ITEM_STATUS.RETURNED || status === 'Resolved') return ITEM_STATUS.RETURNED;
+  return ITEM_STATUS.OPEN;
+};
+
+export const isItemReturned = (item) => getItemStatus(item) === ITEM_STATUS.RETURNED;
 
 // ─── Create ───────────────────────────────────────────────────────────────────
 
@@ -154,6 +172,25 @@ export const subscribeToUserItems = (uid, callback, onError) => {
   );
 };
 
+/**
+ * Subscribe to live updates of a single item.
+ * The callback receives `null` if the item does not exist (e.g. deleted).
+ *
+ * @param {string} itemId
+ * @param {(item: object|null) => void} callback
+ * @param {(error: Error) => void} [onError]
+ * @returns {() => void} Unsubscribe function
+ */
+export const subscribeToItem = (itemId, callback, onError) =>
+  onSnapshot(
+    doc(db, COLLECTION, itemId),
+    (snap) => callback(snap.exists() ? { id: snap.id, ...snap.data() } : null),
+    (err) => {
+      console.error('[itemsService] subscribeToItem error:', err);
+      if (onError) onError(err);
+    },
+  );
+
 // ─── Update ───────────────────────────────────────────────────────────────────
 
 /**
@@ -164,6 +201,25 @@ export const subscribeToUserItems = (uid, callback, onError) => {
  */
 export const updateItem = async (itemId, data) => {
   await updateDoc(doc(db, COLLECTION, itemId), data);
+};
+
+/**
+ * Mark an item as returned after a confirmed handover.
+ *
+ * Only the reporter may do this, and Firestore rules require `chatId` to be a
+ * chat about this item whose handover was confirmed by `otherUid`.
+ *
+ * @param {string} itemId
+ * @param {string} otherUid  uid of the person who received the item
+ * @param {string} chatId    chat holding the handover confirmation
+ */
+export const markItemReturned = async (itemId, otherUid, chatId) => {
+  await updateDoc(doc(db, COLLECTION, itemId), {
+    status:         ITEM_STATUS.RETURNED,
+    returnedAt:     serverTimestamp(),
+    returnedTo:     otherUid,
+    returnedChatId: chatId,
+  });
 };
 
 // ─── Delete ───────────────────────────────────────────────────────────────────

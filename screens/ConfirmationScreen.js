@@ -5,17 +5,15 @@ import {
   TouchableOpacity,
   StyleSheet,
 } from 'react-native';
-import { CheckCircle2, Lock, Lightbulb } from 'lucide-react-native';
+import { CheckCircle2, PackageCheck, Lightbulb } from 'lucide-react-native';
 import { useTheme, useThemedStyles } from '../theme/ThemeContext';
 
-export default function ConfirmationScreen({ navigation }) {
+export default function ConfirmationScreen({ navigation, route }) {
   const { colors } = useTheme();
   const styles = useThemedStyles(createStyles);
-  const handleBackToItems = () => {
-    navigation.navigate('ItemList');
-  };
+  const itemName = route.params?.itemName;
 
-  const handleStartNewChat = () => {
+  const handleBackToItems = () => {
     navigation.navigate('ItemList');
   };
 
@@ -25,28 +23,26 @@ export default function ConfirmationScreen({ navigation }) {
         <CheckCircle2 size={72} color="#4CAF50" strokeWidth={1.8} />
       </View>
 
-      <Text style={styles.title}>Communication Initiated!</Text>
-      
+      <Text style={styles.title}>Item returned</Text>
+
       <Text style={styles.subtitle}>
-        Your secure conversation has been established. You can now coordinate directly with the other user.
+        {itemName ? `"${itemName}" is` : 'Your item is'} now marked as returned. Thanks for helping
+        reunite it with its owner.
       </Text>
 
       <View style={styles.infoBox}>
         <View style={styles.boxTitleRow}>
-          <Lock size={17} color={colors.text} strokeWidth={2.2} />
-          <Text style={styles.infoTitle}>Your Privacy is Protected</Text>
+          <PackageCheck size={17} color={colors.text} strokeWidth={2.2} />
+          <Text style={styles.infoTitle}>What happens now</Text>
         </View>
         <Text style={styles.infoText}>
-          • All messages are encrypted end-to-end
+          • The item no longer appears in the main list
         </Text>
         <Text style={styles.infoText}>
-          • Personal information is kept secure
+          • It can still be found under the "Returned" filter
         </Text>
         <Text style={styles.infoText}>
-          • Chat history is automatically deleted after 30 days
-        </Text>
-        <Text style={styles.infoText}>
-          • You can report any inappropriate behavior
+          • The chat stays available to read, but no new messages can be sent
         </Text>
       </View>
 
@@ -61,16 +57,12 @@ export default function ConfirmationScreen({ navigation }) {
         <Text style={styles.tipText}>
           • Verify item details before meeting
         </Text>
-        <Text style={styles.tipText}>
-          • Use the CampusFinder rating system
-        </Text>
       </View>
 
       <View style={styles.buttonContainer}>
         <TouchableOpacity style={styles.primaryButton} onPress={handleBackToItems}>
           <Text style={styles.primaryButtonText}>Back to Items</Text>
         </TouchableOpacity>
-        
       </View>
     </View>
   );
@@ -156,19 +148,6 @@ const createStyles = (c) => StyleSheet.create({
   },
   primaryButtonText: {
     color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  secondaryButton: {
-    backgroundColor: 'transparent',
-    padding: 15,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#2196F3',
-  },
-  secondaryButtonText: {
-    color: '#2196F3',
     fontSize: 18,
     fontWeight: 'bold',
   },

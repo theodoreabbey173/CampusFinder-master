@@ -13,6 +13,9 @@
  *     createdAt:        Timestamp
  *     lastMessage:      string | null      — AES-256 ciphertext preview
  *     lastMessageTime:  Timestamp | null
+ *     handover:         { confirmedBy: uid, confirmedAt: Timestamp }
+ *                       — optional; set once by the participant who is NOT
+ *                         reporterUid after the item changes hands
  *   }
  *
  * Sub-collection: `chats/{chatId}/messages`
@@ -29,6 +32,7 @@ import {
   addDoc,
   doc,
   setDoc,
+  updateDoc,
   getDocs,
   query,
   where,
@@ -107,12 +111,13 @@ export const createOrGetChat = async (
 
   if (existing) return existing.id;
 
-  // Create a new chat document with participant names stored for the inbox
+  // Create a new chat document with participant names stored for the inbox.
+  // Both names are always present so the inbox never has to look them up.
   const ref = await addDoc(chatsRef, {
     participants:     [currentUserId, otherUserId],
     participantNames: {
-      [currentUserId]: currentUserName,
-      [otherUserId]:   otherUserName,
+      [currentUserId]: currentUserName?.trim() || 'Student',
+      [otherUserId]:   otherUserName?.trim()   || 'Student',
     },
     reporterUid:      otherUserId,   // who owns the item
     itemId,
@@ -123,6 +128,36 @@ export const createOrGetChat = async (
   });
 
   return ref.id;
+};
+
+/**
+ * Return the ID of a chat the user already has about an item, or null.
+ *
+ * @param {string} userId
+ * @param {string} itemId
+ * @returns {Promise<string|null>}
+ */
+export const findChatForItem = async (userId, itemId) => {
+  const q = query(collection(db, 'chats'), where('participants', 'array-contains', userId));
+  const snap = await getDocs(q);
+  const match = snap.docs.find((d) => d.data().itemId === itemId);
+  return match ? match.id : null;
+};
+
+// ─── Handover ─────────────────────────────────────────────────────────────────
+
+/**
+ * Record that the non-reporter received / handed over the item.
+ * Firestore rules allow this once, only for the participant who is not the
+ * reporter, and only with their own uid.
+ *
+ * @param {string} chatId
+ * @param {string} uid  uid of the signed-in (non-reporter) participant
+ */
+export const confirmHandover = async (chatId, uid) => {
+  await updateDoc(doc(db, 'chats', chatId), {
+    handover: { confirmedBy: uid, confirmedAt: serverTimestamp() },
+  });
 };
 
 // ─── Send message ─────────────────────────────────────────────────────────────
@@ -145,6 +180,20 @@ export const sendMessage = async (chatId, plainText, senderId, senderName) => {
 };
 
 // ─── Listeners ────────────────────────────────────────────────────────────────
+
+/**
+ * Subscribe to the chat document itself (participants, reporterUid, handover).
+ * The callback receives `null` if the chat does not exist.
+ */
+export const subscribeToChat = (chatId, callback, onError) =>
+  onSnapshot(
+    doc(db, 'chats', chatId),
+    (snap) => callback(snap.exists() ? { id: snap.id, ...snap.data() } : null),
+    (err) => {
+      console.error('[chatService] subscribeToChat error:', err);
+      if (onError) onError(err);
+    },
+  );
 
 /**
  * Subscribe to messages in a chat, decrypting each one on arrival.

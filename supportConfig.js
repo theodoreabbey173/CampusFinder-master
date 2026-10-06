@@ -7,4 +7,4 @@
  *     before releasing the app.
  */
 
-export const SUPPORT_EMAIL = 'support@campusfinder.app';
+export const SUPPORT_EMAIL = 'theosfyp@gmail.com';

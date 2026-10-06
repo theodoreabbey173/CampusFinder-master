@@ -25,10 +25,9 @@ export default function VerificationScreen({ navigation, route }) {
     setChecking(true);
     try {
       const verified = await checkEmailVerified();
-      if (verified) {
-        // Reset the navigation stack so the user can't go back to Verification
-        navigation.reset({ index: 0, routes: [{ name: 'Welcome' }] });
-      } else {
+      // When verified, App.js (onIdTokenChanged) swaps the stack to Welcome
+      // once the refreshed token arrives — no manual navigation needed.
+      if (!verified) {
         Alert.alert(
           'Not Verified Yet',
           'We couldn\'t confirm your email yet.\n\n• Check your inbox AND spam/junk folder\n• Make sure you clicked the link (not just opened the email)\n• Then tap this button again',

@@ -23,14 +23,24 @@ import {
   Hand,
   Send,
   CheckCircle2,
+  Handshake,
+  PackageCheck,
 } from 'lucide-react-native';
 import { auth } from '../firebaseConfig';
+import { getDisplayName } from '../backend/authService';
 import {
   createOrGetChat,
   sendMessage,
   subscribeToMessages,
+  subscribeToChat,
+  confirmHandover,
   formatMessageTime,
 } from '../backend/chatService';
+import {
+  subscribeToItem,
+  markItemReturned,
+  isItemReturned,
+} from '../backend/itemsService';
 import {
   registerForNotifications,
   showMessageNotification,
@@ -114,7 +124,15 @@ export default function ChatScreen({ navigation, route }) {
   const { item }      = route.params;
   const currentUser   = auth.currentUser;
 
-  const otherPersonName = route.params?.otherUserName ?? item.reporterName ?? 'User';
+  const myName = getDisplayName(currentUser);
+
+  // Older chats may lack participantNames — fall back to the item's reporter
+  // name when the other person is the reporter, otherwise "Student".
+  const otherIsReporter = (route.params?.otherUserId ?? item.reportedBy) === item.reportedBy;
+  const otherPersonName =
+    route.params?.otherUserName?.trim() ||
+    (otherIsReporter && item.reporterName?.trim()) ||
+    'Student';
   const otherInitials   = otherPersonName
     .trim()
     .split(/\s+/)
@@ -128,6 +146,13 @@ export default function ChatScreen({ navigation, route }) {
   const [loading,    setLoading]    = useState(true);
   const [sending,    setSending]    = useState(false);
   const [initError,  setInitError]  = useState(null);
+
+  // Live chat document (reporterUid, handover) and live item (status).
+  // undefined = still loading, null = does not exist (e.g. item deleted).
+  const [chatDoc,    setChatDoc]    = useState(undefined);
+  const [liveItem,   setLiveItem]   = useState(undefined);
+  const [actionBusy, setActionBusy] = useState(false);
+  const actionLockRef               = useRef(false);   // guards against double taps
 
   // Toast state
   const [toast,      setToast]      = useState({ visible: false, sender: '', text: '' });
@@ -181,7 +206,7 @@ export default function ChatScreen({ navigation, route }) {
 
     let unsubscribe;
 
-    const subscribeToChat = (id) => {
+    const startChat = (id) => {
       setChatId(id);
       unsubscribe = subscribeToMessages(
         id,
@@ -210,7 +235,7 @@ export default function ChatScreen({ navigation, route }) {
 
     // ── Fast path: chatId already known (opened from Inbox) ──────────────────
     if (existingChatId) {
-      subscribeToChat(existingChatId);
+      startChat(existingChatId);
       return () => { if (unsubscribe) unsubscribe(); };
     }
 
@@ -234,14 +259,14 @@ export default function ChatScreen({ navigation, route }) {
 
         const id = await createOrGetChat(
           currentUser.uid,
-          currentUser.displayName ?? 'Anonymous',
+          myName,
           otherUserId,
-          item.reporterName ?? 'User',
+          item.reporterName,
           item.id,
           item.name,
         );
 
-        subscribeToChat(id);
+        startChat(id);
       } catch (error) {
         console.error('Chat init error:', error);
         setInitError(error.message ?? 'Could not open the chat. Please try again.');
@@ -270,6 +295,7 @@ export default function ChatScreen({ navigation, route }) {
 
   const handleSend = async () => {
     if (!message.trim()) return;
+    if (returned) return;   // chat is read-only once the item is returned
 
     // Chat still initialising — tell the user instead of silently failing
     if (!chatId) {
@@ -290,7 +316,7 @@ export default function ChatScreen({ navigation, route }) {
         chatId,
         text,
         currentUser.uid,
-        currentUser.displayName ?? 'Anonymous',
+        myName,
       );
     } catch (error) {
       console.error('Send error:', error);
@@ -301,8 +327,94 @@ export default function ChatScreen({ navigation, route }) {
     }
   };
 
-  const handleEndChat = () => {
-    navigation.navigate('ReportConfirmation');
+  // ── Live chat document + live item status ───────────────────────────────────
+
+  useEffect(() => {
+    if (!chatId) return;
+    const unsubscribe = subscribeToChat(chatId, setChatDoc);
+    return unsubscribe;
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!item.id) return;
+    const unsubscribe = subscribeToItem(item.id, setLiveItem);
+    return unsubscribe;
+  }, [item.id]);
+
+  // ── Handover state ──────────────────────────────────────────────────────────
+
+  const reporterUid  = chatDoc?.reporterUid ?? item.reportedBy;
+  const isReporter   = !!currentUser && currentUser.uid === reporterUid;
+  const handover     = chatDoc?.handover ?? null;
+  const itemDeleted  = liveItem === null;
+  const returned     = !!liveItem && isItemReturned(liveItem);
+  const statusReady  = !!chatDoc && liveItem !== undefined;
+
+  // Wraps an Alert-confirmed action so it can only run once at a time.
+  // The lock is taken before the Alert opens, so a double tap can't open two.
+  const runGuardedAction = (title, body, confirmText, action) => {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
+
+    const release = () => {
+      actionLockRef.current = false;
+      setActionBusy(false);
+    };
+
+    Alert.alert(
+      title,
+      body,
+      [
+        { text: 'Cancel', style: 'cancel', onPress: release },
+        {
+          text: confirmText,
+          onPress: async () => {
+            setActionBusy(true);
+            try {
+              await action();
+            } finally {
+              release();
+            }
+          },
+        },
+      ],
+      { cancelable: true, onDismiss: release },
+    );
+  };
+
+  const handleConfirmHandover = () => {
+    if (!chatId || !currentUser) return;
+    runGuardedAction(
+      'Confirm handover',
+      `Confirm that "${item.name}" has changed hands between you and ${otherPersonName}? This can't be undone.`,
+      'Confirm',
+      async () => {
+        try {
+          await confirmHandover(chatId, currentUser.uid);
+        } catch (error) {
+          console.error('Confirm handover error:', error);
+          Alert.alert('Could not confirm', 'The handover could not be confirmed. Please check your connection and try again.');
+        }
+      },
+    );
+  };
+
+  const handleMarkReturned = () => {
+    if (!chatId || !handover?.confirmedBy) return;
+    runGuardedAction(
+      'Mark as returned',
+      `Mark "${item.name}" as returned to ${otherPersonName}? It will be removed from the main list.`,
+      'Mark returned',
+      async () => {
+        try {
+          await markItemReturned(item.id, handover.confirmedBy, chatId);
+          navigation.navigate('ReportConfirmation', { itemName: item.name });
+        } catch (error) {
+          console.error('Mark returned error:', error);
+          Alert.alert('Could not update item', 'The item could not be marked as returned. Please check your connection and try again.');
+        }
+      },
+    );
   };
 
   // ── Render a single message bubble ─────────────────────────────────────────
@@ -327,6 +439,63 @@ export default function ChatScreen({ navigation, route }) {
         <Text style={[styles.timestamp, isMe ? styles.tsRight : styles.tsLeft]}>
           {formatMessageTime(msg.timestamp)}
         </Text>
+      </View>
+    );
+  };
+
+  // ── Handover / return action bar ────────────────────────────────────────────
+  // Non-reporter: "Confirm handover". Reporter: "Mark as returned", enabled
+  // only once the other participant has confirmed the handover.
+
+  const renderHandoverAction = () => {
+    const Icon  = isReporter ? PackageCheck : Handshake;
+    let label   = isReporter ? 'Mark as returned' : 'Confirm handover';
+    let onPress = isReporter ? handleMarkReturned : handleConfirmHandover;
+    let enabled = false;
+    let hint    = null;
+
+    if (!statusReady) {
+      hint = 'Loading item status…';
+    } else if (itemDeleted) {
+      hint = 'This item was deleted by its reporter.';
+    } else if (returned) {
+      label = 'Returned';
+    } else if (isReporter) {
+      enabled = !!handover;
+      hint = handover
+        ? `${otherPersonName} confirmed the handover.`
+        : `Available after ${otherPersonName} confirms the handover.`;
+    } else if (handover) {
+      label = 'Handover confirmed';
+      hint  = `Waiting for ${otherPersonName} to mark the item as returned.`;
+    } else {
+      enabled = true;
+      hint    = 'Tap once the item has changed hands.';
+    }
+
+    const disabled = !enabled || actionBusy;
+
+    return (
+      <View style={styles.actionArea}>
+        {hint ? <Text style={styles.actionHint}>{hint}</Text> : null}
+        <TouchableOpacity
+          style={[styles.actionButton, disabled && styles.actionButtonDisabled]}
+          onPress={onPress}
+          disabled={disabled}
+          accessibilityRole="button"
+          accessibilityState={{ disabled }}
+        >
+          {actionBusy ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <>
+              {returned
+                ? <CheckCircle2 size={16} color="#fff" strokeWidth={2.2} />
+                : <Icon size={16} color="#fff" strokeWidth={2.2} />}
+              <Text style={styles.actionButtonText}>{label}</Text>
+            </>
+          )}
+        </TouchableOpacity>
       </View>
     );
   };
@@ -403,7 +572,7 @@ export default function ChatScreen({ navigation, route }) {
           <Text style={styles.headerName} numberOfLines={1}>{otherPersonName}</Text>
           <View style={styles.headerStatusRow}>
             <View style={styles.statusDot} />
-            <Text style={styles.headerStatusText} numberOfLines={1}>Found your {item.name}</Text>
+            <Text style={styles.headerStatusText} numberOfLines={1}>About: {item.name}</Text>
           </View>
         </View>
       </View>
@@ -412,9 +581,22 @@ export default function ChatScreen({ navigation, route }) {
       <View style={styles.encryptionBanner}>
         <Lock size={12} color="#22C55E" strokeWidth={2.4} style={styles.encryptionBannerIcon} />
         <Text style={styles.encryptionBannerText}>
-          Messages are private & encrypted end-to-end
+          Messages are private & encrypted
         </Text>
       </View>
+
+      {/* ── Returned banner ──────────────────────────────────────────────── */}
+      {returned ? (
+        <View style={styles.returnedBanner}>
+          <CheckCircle2 size={16} color="#fff" strokeWidth={2.4} />
+          <View style={styles.returnedBannerBody}>
+            <Text style={styles.returnedBannerTitle}>Returned</Text>
+            <Text style={styles.returnedBannerText}>
+              This item has been returned. The chat is now read-only.
+            </Text>
+          </View>
+        </View>
+      ) : null}
 
       {/* ── Messages ─────────────────────────────────────────────────────── */}
       <ScrollView
@@ -442,23 +624,23 @@ export default function ChatScreen({ navigation, route }) {
         <View style={styles.inputWrapper}>
           <TextInput
             style={styles.textInput}
-            placeholder="Message..."
+            placeholder={returned ? 'This item has been returned' : 'Message...'}
             placeholderTextColor={colors.placeholder}
             value={message}
             onChangeText={setMessage}
             multiline
             maxLength={500}
-            editable={!sending}
+            editable={!sending && !returned}
             onSubmitEditing={handleSend}
           />
         </View>
         <TouchableOpacity
           style={[
             styles.sendButton,
-            (!message.trim() || sending) && styles.sendButtonDisabled,
+            (!message.trim() || sending || returned) && styles.sendButtonDisabled,
           ]}
           onPress={handleSend}
-          disabled={!message.trim() || sending}
+          disabled={!message.trim() || sending || returned}
         >
           {sending
             ? <ActivityIndicator color="#fff" size="small" />
@@ -467,11 +649,8 @@ export default function ChatScreen({ navigation, route }) {
         </TouchableOpacity>
       </View>
 
-      {/* ── End chat ─────────────────────────────────────────────────────── */}
-      <TouchableOpacity style={styles.endChatButton} onPress={handleEndChat}>
-        <CheckCircle2 size={16} color="#fff" strokeWidth={2.2} />
-        <Text style={styles.endChatButtonText}>End Chat & Report</Text>
-      </TouchableOpacity>
+      {/* ── Handover / return ────────────────────────────────────────────── */}
+      {renderHandoverAction()}
     </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -756,8 +935,44 @@ const createStyles = (c) => StyleSheet.create({
   },
   sendButtonDisabled: { opacity: 0.35 },
 
-  // ── End chat ────────────────────────────────────────────────────────────────
-  endChatButton: {
+  // ── Returned banner ─────────────────────────────────────────────────────────
+  returnedBanner: {
+    backgroundColor:  '#4CAF50',
+    paddingHorizontal: 14,
+    paddingVertical:   10,
+    flexDirection:    'row',
+    alignItems:       'center',
+    gap:                10,
+  },
+  returnedBannerBody: { flex: 1 },
+  returnedBannerTitle: {
+    color:      '#fff',
+    fontWeight: '700',
+    fontSize:   14,
+  },
+  returnedBannerText: {
+    color:     'rgba(255,255,255,0.9)',
+    fontSize:  12,
+    marginTop: 1,
+  },
+
+  // ── Handover / return action ────────────────────────────────────────────────
+  actionArea: {
+    backgroundColor: c.surface,
+    paddingTop:       4,
+  },
+  actionHint: {
+    fontSize:          12,
+    color:             c.textMuted,
+    textAlign:         'center',
+    paddingHorizontal: 16,
+    marginBottom:       6,
+  },
+  actionButtonDisabled: {
+    opacity:   0.45,
+    elevation: 0,
+  },
+  actionButton: {
     backgroundColor: '#4CAF50',
     marginHorizontal: 16,
     marginBottom:     16,
@@ -774,7 +989,7 @@ const createStyles = (c) => StyleSheet.create({
     shadowRadius:     6,
     elevation:         4,
   },
-  endChatButtonText: {
+  actionButtonText: {
     color:      '#fff',
     fontWeight: '700',
     fontSize:   15,

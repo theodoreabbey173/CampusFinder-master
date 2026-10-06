@@ -16,7 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Lock } from 'lucide-react-native';
-import { loginUser, registerUser } from '../backend/authService';
+import { loginUser, registerUser, sendPasswordReset } from '../backend/authService';
 import { useTheme, useThemedStyles } from '../theme/ThemeContext';
 
 export default function AuthScreen({ navigation, route }) {
@@ -28,6 +28,7 @@ export default function AuthScreen({ navigation, route }) {
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
   const [loading,  setLoading]  = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const [tabWidth, setTabWidth] = useState(0);
   const slideAnim = useRef(new Animated.Value(mode === 'signup' ? 1 : 0)).current;
@@ -89,6 +90,42 @@ export default function AuthScreen({ navigation, route }) {
       Alert.alert('Login Error', message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    const trimmed = email.trim();
+    if (!trimmed) {
+      Alert.alert('Enter your email', 'Please enter your email address above first, then tap "Forgot password?" again.');
+      return;
+    }
+
+    const NEUTRAL_MESSAGE = 'If an account exists for this email, a reset link has been sent.';
+
+    setResetting(true);
+    try {
+      await sendPasswordReset(trimmed);
+      Alert.alert('Check your email', NEUTRAL_MESSAGE);
+    } catch (error) {
+      switch (error.code) {
+        case 'auth/user-not-found':
+          // Same message as success so we don't reveal which emails have accounts
+          Alert.alert('Check your email', NEUTRAL_MESSAGE);
+          break;
+        case 'auth/invalid-email':
+          Alert.alert('Invalid email', 'Please enter a valid email address.');
+          break;
+        case 'auth/network-request-failed':
+          Alert.alert('No connection', 'No internet connection. Please check your network and try again.');
+          break;
+        case 'auth/too-many-requests':
+          Alert.alert('Too many requests', 'Please wait a few minutes and try again.');
+          break;
+        default:
+          Alert.alert('Reset failed', 'Could not send the reset email. Please try again.');
+      }
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -203,7 +240,7 @@ export default function AuthScreen({ navigation, route }) {
               </>
             )}
 
-            <Text style={styles.label}>University email</Text>
+            <Text style={styles.label}>Email</Text>
             <TextInput
               style={styles.input}
               placeholder="theodore@st.ug.edu.gh"
@@ -228,11 +265,13 @@ export default function AuthScreen({ navigation, route }) {
 
             {isLogin && (
               <TouchableOpacity
-                style={styles.forgotButton}
-                onPress={() => Alert.alert('Forgot password', 'Please contact support to reset your password.')}
-                disabled={loading}
+                style={[styles.forgotButton, resetting && styles.buttonDisabled]}
+                onPress={handleForgotPassword}
+                disabled={loading || resetting}
               >
-                <Text style={styles.forgotText}>Forgot password?</Text>
+                <Text style={styles.forgotText}>
+                  {resetting ? 'Sending reset link…' : 'Forgot password?'}
+                </Text>
               </TouchableOpacity>
             )}
 
@@ -250,7 +289,7 @@ export default function AuthScreen({ navigation, route }) {
             {!isLogin && (
               <View style={styles.footerNoteRow}>
                 <Lock size={12} color={colors.textMuted} strokeWidth={2.2} />
-                <Text style={styles.footerNote}>A verification code will be sent to your email.</Text>
+                <Text style={styles.footerNote}>A verification link will be sent to your email.</Text>
               </View>
             )}
 

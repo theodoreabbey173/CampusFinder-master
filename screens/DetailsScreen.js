@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,6 @@ import {
   CalendarDays,
   CircleDot,
   CheckCircle2,
-  RotateCcw,
   Trash2,
   ImageOff,
 } from 'lucide-react-native';
@@ -29,44 +28,66 @@ import {
   formatItemDate,
   formatCalendarDate,
   getItemStatus,
-  updateItem,
+  isItemReturned,
+  subscribeToItem,
   deleteItem,
-  ITEM_STATUS,
+  ITEM_STATUS_LABELS,
 } from '../backend/itemsService';
+import { findChatForItem } from '../backend/chatService';
 import { useTheme, useThemedStyles } from '../theme/ThemeContext';
 
 export default function DetailsScreen({ navigation, route }) {
-  const { item } = route.params;
+  const { item: initialItem } = route.params;
   const { colors } = useTheme();
   const styles = useThemedStyles(createStyles);
 
-  const isOwner = !!auth.currentUser && item.reportedBy === auth.currentUser.uid;
-
-  const [status,   setStatus]   = useState(getItemStatus(item));
-  const [updating, setUpdating] = useState(false);
+  // Keep the item (and its status) live; fall back to the passed-in copy.
+  const [item,     setItem]     = useState(initialItem);
   const [deleting, setDeleting] = useState(false);
-  const busy = updating || deleting;
-  const resolved = status === ITEM_STATUS.RESOLVED;
+  // For returned items: chat the viewer already has about this item.
+  // undefined = not looked up yet, null = none.
+  const [existingChatId, setExistingChatId] = useState(undefined);
+
+  const isOwner  = !!auth.currentUser && item.reportedBy === auth.currentUser.uid;
+  const returned = isItemReturned(item);
+  const status   = ITEM_STATUS_LABELS[getItemStatus(item)];
+  const busy     = deleting;
+
+  useEffect(() => {
+    if (!initialItem.id) return;
+    const unsubscribe = subscribeToItem(initialItem.id, (fresh) => {
+      if (fresh) setItem(fresh);
+    });
+    return unsubscribe;
+  }, [initialItem.id]);
+
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!returned || isOwner || !uid || !item.id) return;
+    let cancelled = false;
+    findChatForItem(uid, item.id)
+      .then((id) => { if (!cancelled) setExistingChatId(id); })
+      .catch((err) => {
+        console.error('Find chat error:', err);
+        if (!cancelled) setExistingChatId(null);
+      });
+    return () => { cancelled = true; };
+  }, [returned, isOwner, item.id]);
 
   const handleStartChat = () => {
     navigation.navigate('Chat', { item });
   };
 
-  // ── Owner actions ───────────────────────────────────────────────────────────
-  const handleToggleStatus = async () => {
-    const next = resolved ? ITEM_STATUS.OPEN : ITEM_STATUS.RESOLVED;
-    setUpdating(true);
-    try {
-      await updateItem(item.id, { status: next });
-      setStatus(next);
-    } catch (err) {
-      console.error('Status update error:', err);
-      Alert.alert('Update failed', 'Could not update the status. Please try again.');
-    } finally {
-      setUpdating(false);
-    }
+  const handleOpenExistingChat = () => {
+    navigation.navigate('Chat', {
+      item,
+      existingChatId,
+      otherUserId:   item.reportedBy,
+      otherUserName: item.reporterName,
+    });
   };
 
+  // ── Owner actions ───────────────────────────────────────────────────────────
   const handleDelete = () => {
     Alert.alert(
       'Delete report',
@@ -140,13 +161,26 @@ export default function DetailsScreen({ navigation, route }) {
             <View style={styles.infoRow}>
               <Text style={styles.label}>Status</Text>
               <View style={styles.valueRow}>
-                {resolved
+                {returned
                   ? <CheckCircle2 size={14} color={colors.green} strokeWidth={2.2} />
                   : <CircleDot size={14} color={colors.orange} strokeWidth={2.2} />}
-                <Text style={[styles.value, { color: resolved ? colors.green : colors.orange }]}>{status}</Text>
+                <Text style={[styles.value, { color: returned ? colors.green : colors.orange }]}>{status}</Text>
               </View>
             </View>
             <View style={styles.divider} />
+
+            {returned && item.returnedAt ? (
+              <>
+                <View style={styles.infoRow}>
+                  <Text style={styles.label}>Returned on</Text>
+                  <View style={styles.valueRow}>
+                    <CalendarDays size={14} color={colors.text} strokeWidth={2.2} />
+                    <Text style={styles.value}>{formatCalendarDate(item.returnedAt)}</Text>
+                  </View>
+                </View>
+                <View style={styles.divider} />
+              </>
+            ) : null}
 
             {item.category ? (
               <>
@@ -213,24 +247,12 @@ export default function DetailsScreen({ navigation, route }) {
         <View style={styles.buttonContainer}>
           {isOwner ? (
             <>
-              <TouchableOpacity
-                style={[styles.chatButton, resolved && styles.reopenButton, busy && styles.buttonDisabled]}
-                onPress={handleToggleStatus}
-                disabled={busy}
-              >
-                {updating ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    {resolved
-                      ? <RotateCcw size={18} color="#fff" strokeWidth={2.2} />
-                      : <CheckCircle2 size={18} color="#fff" strokeWidth={2.2} />}
-                    <Text style={styles.chatButtonText}>
-                      {resolved ? 'Reopen Report' : 'Mark as Resolved'}
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
+              {!returned ? (
+                <Text style={styles.ownerHint}>
+                  To mark this item as returned, open the chat with the other student once they
+                  have confirmed the handover.
+                </Text>
+              ) : null}
 
               <TouchableOpacity
                 style={[styles.deleteButton, busy && styles.buttonDisabled]}
@@ -247,11 +269,20 @@ export default function DetailsScreen({ navigation, route }) {
                 )}
               </TouchableOpacity>
             </>
-          ) : (
+          ) : !returned ? (
             <TouchableOpacity style={styles.chatButton} onPress={handleStartChat}>
               <MessageCircle size={18} color="#fff" strokeWidth={2.2} />
               <Text style={styles.chatButtonText}>Start Secure Chat</Text>
             </TouchableOpacity>
+          ) : existingChatId ? (
+            <TouchableOpacity style={styles.chatButton} onPress={handleOpenExistingChat}>
+              <MessageCircle size={18} color="#fff" strokeWidth={2.2} />
+              <Text style={styles.chatButtonText}>Open Chat</Text>
+            </TouchableOpacity>
+          ) : existingChatId === null ? (
+            <Text style={styles.ownerHint}>This item has already been returned to its owner.</Text>
+          ) : (
+            <ActivityIndicator color={colors.green} />
           )}
         </View>
       </ScrollView>
@@ -416,9 +447,12 @@ const createStyles = (c) => StyleSheet.create({
     shadowRadius: 6,
     elevation: 4,
   },
-  reopenButton: {
-    backgroundColor: c.primaryBtn,
-    shadowColor: c.primaryBtn,
+  ownerHint: {
+    fontSize: 13,
+    color: c.textMuted,
+    textAlign: 'center',
+    lineHeight: 19,
+    paddingHorizontal: 8,
   },
   chatButtonText: {
     color: '#fff',
