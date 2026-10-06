@@ -91,7 +91,7 @@ The application follows three main user flows:
 
 ### Frontend Framework
 - **React Native**: Cross-platform mobile development framework
-- **Expo**: Development platform including image picker and push notifications
+- **Expo**: Development platform including the image picker (`expo-image-picker`) and local notifications (`expo-notifications`)
 
 ### Backend & Database
 - **Firebase Authentication**: Email/password accounts, verification links, and password-reset emails
@@ -152,8 +152,8 @@ The process is illustrated beginning on the left side of the diagram.
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/theodoreabbey173/CampusFinder.git
-   cd CampusFinder
+   git clone https://github.com/theodoreabbey173/CampusFinder-master.git
+   cd CampusFinder-master
    ```
 
 2. **Install dependencies**
@@ -221,7 +221,7 @@ CampusFinder/
 │   ├── authService.js              # Sign up / login / verification / password reset / account deletion
 │   ├── chatService.js              # Chat creation, encrypted messaging, handover confirmation, subscriptions
 │   ├── itemsService.js             # Item CRUD, live subscriptions, categories, status & mark-as-returned
-│   ├── notificationService.js      # Push notification registration & badges
+│   ├── notificationService.js      # Local chat-message notifications & badge
 │   ├── settingsService.js          # Per-user privacy settings (AsyncStorage)
 │   ├── storageService.js           # Cloudinary image uploads
 │   └── supportService.js           # Opens pre-filled support emails
@@ -338,11 +338,11 @@ Messages live in `chats/{chatId}/messages` with `text` (encrypted), `senderId`, 
 - **Password Reset**: Firebase password-reset email from the login screen ("Forgot password?") or Privacy & Safety, with a neutral message that doesn't reveal whether an account exists
 - **Account Deletion**: Password-confirmed; removes the user's reports and login
 - **Safe Meeting Guidelines**: In-app safety tips for user meetings
-- **Report System**: Users can report inappropriate behaviour or content to support
+- **Report a User or Content**: Privacy & Safety opens a pre-filled email to the support inbox (there is no in-app moderation queue)
 
 ## 🎯 Future Enhancements
 
-- [ ] Push notifications for new matches
+- [ ] Remote push notifications for new items and matches (today only local notifications for chat messages exist)
 - [ ] Advanced search and filtering options
 - [ ] User rating and feedback system
 - [ ] Integration with university security
