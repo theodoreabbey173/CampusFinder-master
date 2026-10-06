@@ -16,6 +16,7 @@
     "buffer": "^6.0.3",
     "crypto-js": "^4.2.0",
     "expo": "^57.0.0",
+    "expo-constants": "~57.0.21",
     "expo-image-picker": "~57.0.19",
     "expo-linear-gradient": "~57.0.2",
     "expo-notifications": "~57.0.20",

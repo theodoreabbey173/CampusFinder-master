@@ -14,6 +14,7 @@ import {
   AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ChevronLeft,
   ArrowLeft,
@@ -41,12 +42,7 @@ import {
   markItemReturned,
   isItemReturned,
 } from '../backend/itemsService';
-import {
-  registerForNotifications,
-  showMessageNotification,
-  clearBadge,
-  addNotificationTapListener,
-} from '../backend/notificationService';
+import { setActiveChat, clearBadge } from '../backend/notificationService';
 import { useTheme, useThemedStyles } from '../theme/ThemeContext';
 
 // ─── In-app toast component ───────────────────────────────────────────────────
@@ -111,7 +107,6 @@ const MessageToast = ({ senderName, messageText, visible }) => {
         <Text style={styles.toastSender} numberOfLines={1}>{senderName}</Text>
         <Text style={styles.toastMessage} numberOfLines={1}>{messageText}</Text>
       </View>
-      <Lock size={14} color="rgba(255,255,255,0.7)" strokeWidth={2.2} style={styles.toastLock} />
     </Animated.View>
   );
 };
@@ -163,19 +158,13 @@ export default function ChatScreen({ navigation, route }) {
   const isInitialLoad      = useRef(true);
   const prevMessageCount   = useRef(0);
   const scrollRef          = useRef(null);
-  const itemNameRef        = useRef(item.name);
 
   // ── Notification setup ──────────────────────────────────────────────────────
+  // Pushes are sent by the notifyOnNewMessage Cloud Function. While this chat
+  // is open its pushes are not shown as banners — the toast below covers it.
 
   useEffect(() => {
-    // Ask permission and clear any old badge
-    registerForNotifications();
     clearBadge();
-
-    // If user taps a notification → go back to this chat (already here)
-    const removeTapListener = addNotificationTapListener(() => {
-      clearBadge();
-    });
 
     // Track app foreground/background state
     const appStateSub = AppState.addEventListener('change', (nextState) => {
@@ -183,11 +172,16 @@ export default function ChatScreen({ navigation, route }) {
       if (nextState === 'active') clearBadge();
     });
 
-    return () => {
-      removeTapListener();
-      appStateSub.remove();
-    };
+    return () => appStateSub.remove();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!chatId) return;
+      setActiveChat(chatId);
+      return () => setActiveChat(null);
+    }, [chatId]),
+  );
 
   // ── Init chat ───────────────────────────────────────────────────────────────
   // `retryKey` drives re-runs when the user taps "Try Again".
@@ -281,13 +275,11 @@ export default function ChatScreen({ navigation, route }) {
   // ── Handle an incoming message ──────────────────────────────────────────────
 
   const handleIncomingMessage = useCallback((msg) => {
+    // App is visible — show in-app animated toast. When backgrounded, the
+    // Cloud Function's push notification reaches the user instead.
     if (appStateRef.current === 'active') {
-      // App is visible — show in-app animated toast
       toastKey.current += 1;
       setToast({ visible: true, sender: msg.senderName, text: msg.text, key: toastKey.current });
-    } else {
-      // App is backgrounded — fire a system notification
-      showMessageNotification(msg.senderName, msg.text, itemNameRef.current);
     }
   }, []);
 
@@ -577,11 +569,12 @@ export default function ChatScreen({ navigation, route }) {
         </View>
       </View>
 
-      {/* ── Encryption notice (one-time banner) ──────────────────────────── */}
+      {/* ── Privacy notice ───────────────────────────────────────────────── */}
+      {/* Access is limited by Firestore rules; messages are not end-to-end encrypted. */}
       <View style={styles.encryptionBanner}>
         <Lock size={12} color="#22C55E" strokeWidth={2.4} style={styles.encryptionBannerIcon} />
         <Text style={styles.encryptionBannerText}>
-          Messages are private & encrypted
+          Only you and {otherPersonName} can see this chat
         </Text>
       </View>
 
@@ -752,9 +745,6 @@ const createStyles = (c) => StyleSheet.create({
     color:    'rgba(255,255,255,0.75)',
     fontSize: 13,
     marginTop: 2,
-  },
-  toastLock: {
-    marginLeft: 8,
   },
 
   // ── Header ─────────────────────────────────────────────────────────────────

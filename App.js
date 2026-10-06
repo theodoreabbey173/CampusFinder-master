@@ -1,12 +1,23 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
+import {
+  NavigationContainer,
+  DefaultTheme,
+  DarkTheme,
+  createNavigationContainerRef,
+} from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { onIdTokenChanged } from 'firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth } from './firebaseConfig';
 import { ThemeProvider, useTheme } from './theme/ThemeContext';
+import {
+  registerPushToken,
+  addNotificationTapListener,
+  takeLaunchNotificationTap,
+} from './backend/notificationService';
 
 // Screens
 import AuthScreen         from './screens/AuthScreen';
@@ -22,6 +33,23 @@ import PrivacyAndSafety   from './screens/PrivacyAndSafety';
 import HelpAndSupport     from './screens/HelpAndSupport';
 
 const Stack = createNativeStackNavigator();
+const navigationRef = createNavigationContainerRef();
+
+// Set once the user taps "Get started" — returning users skip the Welcome screen
+const ONBOARDING_KEY = 'onboarding_completed';
+
+// Chat screen params for a tapped message notification
+// (data is sent by the notifyOnNewMessage Cloud Function)
+const chatParamsFromNotification = (data) => ({
+  item: {
+    id:         data.itemId,
+    name:       data.itemName,
+    reportedBy: data.reporterUid,
+  },
+  existingChatId: data.chatId,
+  otherUserId:    data.senderId,
+  otherUserName:  data.senderName,
+});
 
 export default function App() {
   return (
@@ -37,6 +65,58 @@ function AppNavigator() {
   const [user,          setUser]          = useState(null);
   const [emailVerified, setEmailVerified] = useState(false);
   const [initializing,  setInitializing]  = useState(true);
+  const [onboarded,     setOnboarded]     = useState(null);   // null = still loading
+
+  // Notification tap waiting for the signed-in navigator to be ready
+  const pendingChatRef = useRef(null);
+  const handledTapIds  = useRef(new Set());
+
+  useEffect(() => {
+    AsyncStorage.getItem(ONBOARDING_KEY)
+      .then((value) => setOnboarded(value === 'true'))
+      .catch(() => setOnboarded(false));
+  }, []);
+
+  const completeOnboarding = useCallback(() => {
+    setOnboarded(true);   // removes Welcome from the stack → lands on ItemList
+    AsyncStorage.setItem(ONBOARDING_KEY, 'true').catch((err) =>
+      console.warn('[App] Could not save onboarding state:', err?.message));
+  }, []);
+
+  const signedIn = !!user && emailVerified;
+
+  const flushPendingChat = useCallback(() => {
+    const data = pendingChatRef.current;
+    if (!data || !signedIn || !navigationRef.isReady()) return;
+    pendingChatRef.current = null;
+    navigationRef.navigate('Chat', chatParamsFromNotification(data));
+  }, [signedIn]);
+
+  // Open the chat when a message notification is tapped (including the tap
+  // that launched the app)
+  useEffect(() => {
+    const handleTap = ({ id, data }) => {
+      if (handledTapIds.current.has(id) || !data?.chatId) return;
+      handledTapIds.current.add(id);
+      pendingChatRef.current = data;
+      flushPendingChat();
+    };
+
+    const launchTap = takeLaunchNotificationTap();
+    if (launchTap) handleTap(launchTap);
+
+    return addNotificationTapListener(handleTap);
+  }, [flushPendingChat]);
+
+  // A tap that arrived before sign-in finished is opened once it has
+  useEffect(() => {
+    flushPendingChat();
+  }, [flushPendingChat]);
+
+  // Register this device for message pushes once the user can use the app
+  useEffect(() => {
+    if (signedIn) registerPushToken(user.uid);
+  }, [signedIn, user?.uid]);
 
   // Listen for Firebase Auth state changes (login / logout)
   useEffect(() => {
@@ -71,7 +151,7 @@ function AppNavigator() {
 
   // Show a spinner while Firebase resolves the persisted session
   // (and the saved theme loads, so there's no light → dark flash)
-  if (initializing || !themeReady) {
+  if (initializing || !themeReady || onboarded === null) {
     return (
       <View style={[styles.loading, { backgroundColor: colors.surface }]}>
         <ActivityIndicator size="large" color={colors.blue} />
@@ -83,7 +163,8 @@ function AppNavigator() {
    * Route logic:
    *   • Not signed in               → Auth screen (Log in / Sign up)
    *   • Signed in but unverified    → Verification screen only
-   *   • Signed in & email verified  → Full app
+   *   • Signed in & email verified  → Full app (Welcome only until the user
+   *                                   has tapped "Get started" once)
    *
    * Screens are conditionally rendered (rather than relying on
    * initialRouteName, which is only read once on mount) so that the
@@ -92,7 +173,7 @@ function AppNavigator() {
   return (
     <SafeAreaProvider>
       <StatusBar style={isDark ? 'light' : 'dark'} />
-      <NavigationContainer theme={navigationTheme}>
+      <NavigationContainer ref={navigationRef} theme={navigationTheme} onReady={flushPendingChat}>
         <Stack.Navigator>
 
           {!user ? (
@@ -109,11 +190,11 @@ function AppNavigator() {
             />
           ) : (
             <>
-              <Stack.Screen
-                name="Welcome"
-                component={WelcomeScreen}
-                options={{ headerShown: false }}
-              />
+              {!onboarded && (
+                <Stack.Screen name="Welcome" options={{ headerShown: false }}>
+                  {(props) => <WelcomeScreen {...props} onGetStarted={completeOnboarding} />}
+                </Stack.Screen>
+              )}
               <Stack.Screen
                 name="ItemList"
                 component={MainTabs}

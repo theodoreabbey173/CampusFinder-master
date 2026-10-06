@@ -34,12 +34,11 @@ const FEATURES = [
   },
 ];
 
-export default function WelcomeScreen({ navigation }) {
+// Shown only until the user taps "Get started" — onGetStarted (from App.js)
+// saves that and swaps this screen out for ItemList.
+export default function WelcomeScreen({ onGetStarted }) {
   const { colors } = useTheme();
   const styles = useThemedStyles(createStyles);
-  const handleGetStarted = () => {
-    navigation.navigate('ItemList');
-  };
 
   return (
     <View style={styles.flex}>
@@ -73,7 +72,7 @@ export default function WelcomeScreen({ navigation }) {
 
         <View style={styles.spacer} />
 
-        <TouchableOpacity style={styles.button} onPress={handleGetStarted}>
+        <TouchableOpacity style={styles.button} onPress={onGetStarted}>
           <Text style={styles.buttonText}>Get started</Text>
         </TouchableOpacity>
       </View>

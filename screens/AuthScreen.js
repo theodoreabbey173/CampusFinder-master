@@ -69,9 +69,9 @@ export default function AuthScreen({ navigation, route }) {
       if (!user.emailVerified) {
         // Account exists but email not yet confirmed — send them to verification
         navigation.navigate('Verification', { email });
-      } else {
-        navigation.navigate('Welcome');
       }
+      // Verified users are routed by App.js when the auth state changes
+      // (Welcome on first use, otherwise straight to ItemList).
     } catch (error) {
       let message = 'Login failed. Please try again.';
       switch (error.code) {

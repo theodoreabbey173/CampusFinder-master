@@ -1,7 +1,9 @@
 /**
  * backend/chatService.js
  * ─────────────────────────────────────────────────────────────────────────────
- * Firestore real-time messaging helpers with AES-256 encryption.
+ * Firestore real-time messaging helpers. Messages are protected by Firestore's
+ * encryption in transit / at rest and by participant-only security rules;
+ * they are not end-to-end encrypted.
  *
  * Collection: `chats`
  *   {
@@ -11,7 +13,7 @@
  *     itemId:           string
  *     itemName:         string
  *     createdAt:        Timestamp
- *     lastMessage:      string | null      — AES-256 ciphertext preview
+ *     lastMessage:      string | null      — preview (legacy chats: AES ciphertext)
  *     lastMessageTime:  Timestamp | null
  *     handover:         { confirmedBy: uid, confirmedAt: Timestamp }
  *                       — optional; set once by the participant who is NOT
@@ -20,7 +22,7 @@
  *
  * Sub-collection: `chats/{chatId}/messages`
  *   {
- *     text:       string     — AES-256 ciphertext
+ *     text:       string     — message text (legacy messages: AES ciphertext)
  *     senderId:   string
  *     senderName: string
  *     timestamp:  Timestamp
@@ -43,29 +45,27 @@ import {
 import CryptoJS from 'crypto-js';
 import { db } from '../firebaseConfig';
 
-// ─── Encryption ───────────────────────────────────────────────────────────────
+// ─── Legacy message decoding ──────────────────────────────────────────────────
+// Older messages were AES-encrypted with a key derived from the chat ID and a
+// salt shipped in the app. Anyone able to read the chat could derive that key,
+// so it gave no protection beyond Firestore's own encryption in transit and at
+// rest plus the participant-only security rules. New messages are stored as
+// plain text; this decoder only keeps old messages readable.
 
-const ENCRYPTION_SALT = 'CampusFinder_E2E_SecureChat_v1';
+const LEGACY_SALT = 'CampusFinder_E2E_SecureChat_v1';
+const LEGACY_PREFIX = 'U2FsdGVkX1';   // base64 of CryptoJS's "Salted__" header
 
-const deriveKey = (chatId) =>
-  CryptoJS.SHA256(chatId + ENCRYPTION_SALT).toString(CryptoJS.enc.Hex);
+const legacyKey = (chatId) =>
+  CryptoJS.SHA256(chatId + LEGACY_SALT).toString(CryptoJS.enc.Hex);
 
-export const encryptMessage = (plainText, chatId) => {
+export const decodeMessageText = (text, chatId) => {
+  if (!text) return '';
+  if (!text.startsWith(LEGACY_PREFIX)) return text;
   try {
-    return CryptoJS.AES.encrypt(plainText, deriveKey(chatId)).toString();
+    const plain = CryptoJS.AES.decrypt(text, legacyKey(chatId)).toString(CryptoJS.enc.Utf8);
+    return plain || text;
   } catch {
-    return plainText;
-  }
-};
-
-export const decryptMessage = (cipherText, chatId) => {
-  if (!cipherText) return '';
-  try {
-    const bytes = CryptoJS.AES.decrypt(cipherText, deriveKey(chatId));
-    const plain = bytes.toString(CryptoJS.enc.Utf8);
-    return plain || cipherText;   // fallback for legacy plain-text messages
-  } catch {
-    return cipherText;
+    return text;
   }
 };
 
@@ -162,11 +162,9 @@ export const confirmHandover = async (chatId, uid) => {
 
 // ─── Send message ─────────────────────────────────────────────────────────────
 
-export const sendMessage = async (chatId, plainText, senderId, senderName) => {
-  const encryptedText = encryptMessage(plainText, chatId);
-
+export const sendMessage = async (chatId, text, senderId, senderName) => {
   await addDoc(collection(db, 'chats', chatId, 'messages'), {
-    text:      encryptedText,
+    text,
     senderId,
     senderName,
     timestamp: serverTimestamp(),
@@ -174,7 +172,7 @@ export const sendMessage = async (chatId, plainText, senderId, senderName) => {
 
   await setDoc(
     doc(db, 'chats', chatId),
-    { lastMessage: encryptedText, lastMessageTime: serverTimestamp() },
+    { lastMessage: text, lastMessageTime: serverTimestamp() },
     { merge: true },
   );
 };
@@ -196,7 +194,7 @@ export const subscribeToChat = (chatId, callback, onError) =>
   );
 
 /**
- * Subscribe to messages in a chat, decrypting each one on arrival.
+ * Subscribe to messages in a chat, decoding legacy encrypted ones on arrival.
  */
 export const subscribeToMessages = (chatId, callback, onError) => {
   const q = query(
@@ -210,10 +208,9 @@ export const subscribeToMessages = (chatId, callback, onError) => {
       const messages = snap.docs.map((d) => {
         const data = d.data();
         return {
-          id:          d.id,
+          id:   d.id,
           ...data,
-          text:        decryptMessage(data.text, chatId),
-          isEncrypted: true,
+          text: decodeMessageText(data.text, chatId),
         };
       });
       callback(messages);
@@ -246,9 +243,8 @@ export const subscribeToUserChats = (userId, callback, onError) => {
           return {
             id: d.id,
             ...data,
-            // Decrypt the preview so the inbox can display it
             lastMessage: data.lastMessage
-              ? decryptMessage(data.lastMessage, d.id)
+              ? decodeMessageText(data.lastMessage, d.id)
               : null,
           };
         })

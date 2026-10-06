@@ -36,6 +36,10 @@ import {
   query,
   where,
   orderBy,
+  limit,
+  startAfter,
+  endAt,
+  getCountFromServer,
   onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
@@ -102,15 +106,62 @@ export const createItem = async (itemData) => {
 
 // ─── Read (one-time) ──────────────────────────────────────────────────────────
 
+export const ITEMS_PAGE_SIZE = 20;
+
 /**
- * Fetch all items once, newest first.
+ * Fetch one page of items, newest first.
  *
- * @returns {Promise<object[]>}
+ * @param {import('firebase/firestore').DocumentSnapshot|null} [cursor]
+ *        `cursor` from the previous page; omit for the first page
+ * @param {number} [pageSize]
+ * @returns {Promise<{ items: object[], cursor: object|null, hasMore: boolean }>}
+ *
+ * @example
+ *   const first  = await getItemsPage();
+ *   const second = await getItemsPage(first.cursor);
  */
-export const getItems = async () => {
-  const q = query(collection(db, COLLECTION), orderBy('createdAt', 'desc'));
+export const getItemsPage = async (cursor = null, pageSize = ITEMS_PAGE_SIZE) => {
+  const q = query(
+    collection(db, COLLECTION),
+    orderBy('createdAt', 'desc'),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(pageSize),
+  );
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  return {
+    items:   snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+    cursor:  snap.docs[snap.docs.length - 1] ?? cursor,
+    hasMore: snap.docs.length === pageSize,
+  };
+};
+
+/**
+ * Count open items by type and returned items, server-side (no documents are
+ * downloaded). Items without a status, or with legacy 'Open', count as open.
+ *
+ * @returns {Promise<{ total: number, lost: number, found: number, returned: number }>}
+ */
+export const getItemCounts = async () => {
+  const items    = collection(db, COLLECTION);
+  const returned = where('status', 'in', [ITEM_STATUS.RETURNED, 'Resolved']);
+  const count    = async (...filters) =>
+    (await getCountFromServer(query(items, ...filters))).data().count;
+
+  const [all, allReturned, lost, lostReturned, found, foundReturned] = await Promise.all([
+    count(),
+    count(returned),
+    count(where('type', '==', 'Lost')),
+    count(where('type', '==', 'Lost'), returned),
+    count(where('type', '==', 'Found')),
+    count(where('type', '==', 'Found'), returned),
+  ]);
+
+  return {
+    total:    all - allReturned,
+    lost:     lost - lostReturned,
+    found:    found - foundReturned,
+    returned: allReturned,
+  };
 };
 
 /**
@@ -127,24 +178,103 @@ export const getItemById = async (itemId) => {
 // ─── Read (real-time) ─────────────────────────────────────────────────────────
 
 /**
- * Subscribe to live item updates, newest first.
- * Call the returned unsubscribe function to stop listening.
+ * Subscribe to live item updates, newest first, one page at a time.
  *
- * @param {(items: object[]) => void} callback
- * @returns {() => void} Unsubscribe function
+ * Each page has its own listener, bounded by document cursors so pages never
+ * shift when items are added or removed:
+ *   • The last page is open-ended: startAfter(previous page's last doc) + limit.
+ *   • loadMore() freezes it with endAt(its last doc) and opens the next page.
+ *   • The first page has no start bound, so new items always appear in it.
+ * Edits, deletions and new items stay live on every loaded page.
+ *
+ * @param {(feed: { items: object[], hasMore: boolean, loadingMore: boolean }) => void} callback
+ * @param {(error: Error) => void} [onError]
+ * @param {number} [pageSize]
+ * @returns {{ loadMore: () => void, unsubscribe: () => void }}
  *
  * @example
  *   useEffect(() => {
- *     const unsub = subscribeToItems(setItems);
- *     return unsub;
+ *     const feed = subscribeToItems(({ items }) => setItems(items));
+ *     loadMoreRef.current = feed.loadMore;
+ *     return feed.unsubscribe;
  *   }, []);
  */
-export const subscribeToItems = (callback) => {
-  const q = query(collection(db, COLLECTION), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    callback(items);
-  });
+export const subscribeToItems = (callback, onError, pageSize = ITEMS_PAGE_SIZE) => {
+  const pages = [];   // { start, docs, ready, unsubscribe }
+  let stopped = false;
+
+  const pageQuery = (...bounds) =>
+    query(collection(db, COLLECTION), orderBy('createdAt', 'desc'), ...bounds);
+
+  const lastPage = () => pages[pages.length - 1];
+
+  const emit = () => {
+    if (stopped) return;
+    const seen  = new Set();
+    const items = [];
+    pages.forEach((page) => page.docs.forEach((d) => {
+      if (seen.has(d.id)) return;
+      seen.add(d.id);
+      items.push({ id: d.id, ...d.data() });
+    }));
+    const last = lastPage();
+    callback({
+      items,
+      hasMore:     !!last?.ready && last.docs.length === pageSize,
+      loadingMore: pages.length > 1 && !last.ready,
+    });
+  };
+
+  const listen = (page, q) => onSnapshot(
+    q,
+    (snap) => {
+      page.docs  = snap.docs;
+      page.ready = true;
+      emit();
+    },
+    (err) => {
+      console.error('[itemsService] subscribeToItems error:', err);
+      if (onError) onError(err);
+    },
+  );
+
+  const openPage = (start) => {
+    const page = { start, docs: [], ready: false };
+    page.unsubscribe = listen(
+      page,
+      pageQuery(...(start ? [startAfter(start)] : []), limit(pageSize)),
+    );
+    pages.push(page);
+  };
+
+  const loadMore = () => {
+    const last = lastPage();
+    if (stopped || !last?.ready || last.docs.length < pageSize) return;
+
+    // Freeze the current last page at its last doc, then open the next one.
+    // The old listener is removed after the new one starts, so the cached
+    // docs keep the page filled in the meantime.
+    const end = last.docs[last.docs.length - 1];
+    const previous = last.unsubscribe;
+    last.unsubscribe = listen(
+      last,
+      pageQuery(...(last.start ? [startAfter(last.start)] : []), endAt(end)),
+    );
+    previous();
+
+    openPage(end);
+    emit();
+  };
+
+  openPage(null);
+
+  return {
+    loadMore,
+    unsubscribe: () => {
+      stopped = true;
+      pages.forEach((page) => page.unsubscribe());
+    },
+  };
 };
 
 /**

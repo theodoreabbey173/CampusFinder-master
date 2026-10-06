@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ChevronLeft, AlertTriangle, MessageCircle } from 'lucide-react-native';
+import { AlertTriangle, MessageCircle } from 'lucide-react-native';
 import { auth } from '../firebaseConfig';
 import { subscribeToUserChats, formatMessageTime } from '../backend/chatService';
 import { useTheme, useThemedStyles } from '../theme/ThemeContext';
@@ -101,15 +101,9 @@ export default function InboxScreen({ navigation }) {
   };
 
   // ── Header ───────────────────────────────────────────────────────────────────
+  // No back button: this is a tab root, reached from the tab bar.
   const header = (
     <View style={styles.header}>
-      <TouchableOpacity
-        style={styles.backButton}
-        onPress={() => navigation.canGoBack() && navigation.goBack()}
-        activeOpacity={0.7}
-      >
-        <ChevronLeft size={22} color={colors.text} strokeWidth={2.4} />
-      </TouchableOpacity>
       <Text style={styles.headerTitle}>Messages</Text>
     </View>
   );
@@ -199,15 +193,6 @@ const createStyles = (c) => StyleSheet.create({
     backgroundColor: c.surface,
     paddingHorizontal: 16,
     paddingVertical:   14,
-  },
-  backButton: {
-    width:           34,
-    height:          34,
-    borderRadius:    17,
-    backgroundColor: c.surfaceAlt,
-    justifyContent:  'center',
-    alignItems:      'center',
-    marginRight:      12,
   },
   headerTitle: {
     fontSize:   22,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   Search,
   X,
@@ -22,7 +23,13 @@ import {
   Plus,
   CheckCircle2,
 } from 'lucide-react-native';
-import { subscribeToItems, formatItemDate, isItemReturned } from '../backend/itemsService';
+import {
+  subscribeToItems,
+  getItemCounts,
+  formatItemDate,
+  isItemReturned,
+  ITEMS_PAGE_SIZE,
+} from '../backend/itemsService';
 import { subscribeToUserChats } from '../backend/chatService';
 import { auth } from '../firebaseConfig';
 import { useTheme, useThemedStyles } from '../theme/ThemeContext';
@@ -42,18 +49,43 @@ export default function ListScreen({ navigation }) {
   const styles = useThemedStyles(createStyles);
 
   const [items,       setItems]        = useState([]);
+  const [hasMore,      setHasMore]      = useState(false);
+  const [loadingMore,  setLoadingMore]  = useState(false);
   const [loading,      setLoading]      = useState(true);
   const [searchQuery,  setSearchQuery]  = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
   const [chatCount,    setChatCount]    = useState(0);
+  const [serverCounts, setServerCounts] = useState(null);   // null → count loaded items
+  const loadMoreRef                     = useRef(() => {});
 
+  // Items arrive a page at a time; scrolling to the end loads the next page
   useEffect(() => {
-    const unsubscribe = subscribeToItems((fetchedItems) => {
-      setItems(fetchedItems);
-      setLoading(false);
-    });
-    return unsubscribe;
+    const feed = subscribeToItems(
+      (next) => {
+        setItems(next.items);
+        setHasMore(next.hasMore);
+        setLoadingMore(next.loadingMore);
+        setLoading(false);
+      },
+      () => setLoading(false),
+    );
+    loadMoreRef.current = feed.loadMore;
+    return feed.unsubscribe;
   }, []);
+
+  const loadMore = useCallback(() => loadMoreRef.current(), []);
+
+  // Totals come from server-side counts, since only some pages are loaded.
+  // Refreshed whenever the tab gains focus (e.g. after reporting an item).
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      getItemCounts()
+        .then((counts) => { if (active) setServerCounts(counts); })
+        .catch((err) => console.warn('[ListScreen] Could not load item counts:', err?.message));
+      return () => { active = false; };
+    }, []),
+  );
 
   useEffect(() => {
     const currentUser = auth.currentUser;
@@ -66,6 +98,7 @@ export default function ListScreen({ navigation }) {
   }, []);
 
   const stats = useMemo(() => {
+    if (serverCounts) return serverCounts;
     const open = items.filter((i) => !isItemReturned(i));
     return {
       total:    open.length,
@@ -73,7 +106,7 @@ export default function ListScreen({ navigation }) {
       found:    open.filter((i) => i.type === 'Found').length,
       returned: items.length - open.length,
     };
-  }, [items]);
+  }, [items, serverCounts]);
 
   const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
@@ -90,6 +123,12 @@ export default function ListScreen({ navigation }) {
       return matchesFilter && matchesSearch;
     });
   }, [items, activeFilter, searchQuery]);
+
+  // Search and filters run on loaded pages only — keep loading pages while
+  // fewer than a page of matches is showing, so results aren't missed.
+  useEffect(() => {
+    if (hasMore && !loadingMore && filteredItems.length < ITEMS_PAGE_SIZE) loadMore();
+  }, [hasMore, loadingMore, filteredItems.length, loadMore]);
 
   const handleItemPress = (item) => navigation.navigate('ItemDetails', { item });
 
@@ -287,7 +326,11 @@ export default function ListScreen({ navigation }) {
 
       {/* ── List / empty state ───────────────────────────────────────────── */}
       <View style={{ flex: 1 }}>
-        {filteredItems.length === 0 ? (
+        {filteredItems.length === 0 && (hasMore || loadingMore) ? (
+          <View style={styles.centered}>
+            <ActivityIndicator size="large" color="#2196F3" />
+          </View>
+        ) : filteredItems.length === 0 ? (
           <View style={styles.centered}>
             {searchQuery
               ? <SearchX size={56} color={colors.emptyIcon} strokeWidth={1.6} style={styles.emptyIcon} />
@@ -318,6 +361,11 @@ export default function ListScreen({ navigation }) {
             renderItem={renderItem}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.listContainer}
+            onEndReached={loadMore}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={
+              loadingMore ? <ActivityIndicator style={styles.listFooter} color="#2196F3" /> : null
+            }
           />
         )}
       </View>
@@ -557,6 +605,9 @@ const createStyles = (c) => StyleSheet.create({
     padding: 16,
     paddingTop: 10,
     paddingBottom: 20,
+  },
+  listFooter: {
+    paddingVertical: 16,
   },
 
   // ── Item card ─────────────────────────────────────────────────────────────

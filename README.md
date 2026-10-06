@@ -28,7 +28,7 @@ CampusFinder is a comprehensive lost and found solution specifically designed fo
 
 - **Item Reporting System**: Easy-to-use forms for reporting both lost and found items with image upload
 - **Visual Item Browse**: Browse items with images, live Lost/Found stats, search, and filters
-- **Secure Communication**: Encrypted chat system for user safety
+- **Private Communication**: Chats only the two participants can read (enforced by Firestore rules; not end-to-end encrypted)
 - **Confirmed Handover & Returns**: An item is marked as returned only after the other student confirms the handover in chat; returned items move to a "Returned" filter and the chat becomes read-only
 - **User Authentication**: Firebase-backed sign-up, login, email verification by link, and "Forgot password?" reset emails
 - **Verified-only Access**: Firestore rules only let users with a verified email read or write items, chats and messages
@@ -39,7 +39,8 @@ CampusFinder is a comprehensive lost and found solution specifically designed fo
 - **Privacy & Safety Settings**: Anonymous posting, password reset, account deletion, and safety guidelines
 - **Help & Support**: Expandable FAQs plus one-tap Contact Support, Report a Problem, and Send Feedback
 - **Location & Category Tagging**: Items are tagged with a campus location, a category, and the date lost/found
-- **Message Notifications**: In-app toast for new messages while a chat is open, and a local notification when the app is in the background
+- **Push Notifications**: A Cloud Function sends a push for every new chat message, even when the app is closed; tapping it opens the chat. While a chat is open, new messages show as an in-app toast instead
+- **Paginated Browse**: Items load 20 at a time with infinite scrolling, while every loaded page stays live
 - **Real-time Updates**: Firebase-powered live data syncing
 - **Icon-Based UI**: Consistent `lucide-react-native` iconography throughout — no emoji in the app UI
 
@@ -51,12 +52,12 @@ The application follows three main user flows:
 - **SignUp Screen**: User registration with name, email, and password; a verification link is emailed on sign-up
 - **Login Screen**: Existing user sign-in, plus **Forgot password?** which emails a reset link to the address in the email field
 - **Verification Screen**: Asks the user to click the link in their email, then tap **Verify & continue** (with a resend option)
-- **Welcome Screen**: App introduction and feature overview
+- **Welcome Screen**: App introduction and feature overview, shown until **Get started** is tapped once (saved as `onboarding_completed` in AsyncStorage)
 
 > Firebase Auth state determines the initial route automatically (`onIdTokenChanged` in `App.js`):
 > - Not signed in → Auth screens (SignUp / Login)
 > - Signed in but email unverified → Verification screen
-> - Signed in & verified → Full app
+> - Signed in & verified → Welcome on first use, otherwise straight to the Browse tab
 >
 > After the link is clicked, **Verify & continue** reloads the user and forces an ID-token refresh, so the
 > `email_verified` claim the Firestore rules check is up to date and the app moves to the Welcome screen
@@ -64,7 +65,7 @@ The application follows three main user flows:
 
 ### 2. Main App (Bottom Tabs)
 `MainTabs.js` hosts three tabs, each backed by a dedicated screen:
-- **Browse** (`ListScreen`): Live Lost/Found stats, search, filter pills (All / Lost / Found show open items; **Returned** shows returned ones), and a floating **+ Report** button
+- **Browse** (`ListScreen`): Lost/Found stats (server-side counts), a paginated live item list with infinite scrolling, search, filter pills (All / Lost / Found show open items; **Returned** shows returned ones), and a floating **+ Report** button. Search and filters run on loaded pages and load more pages automatically while results are short
 - **Chats** (`InboxScreen`): Overview of all active chat conversations
 - **You** (`ProfileScreen`): Account info, Dark mode toggle, and links to the account screens below
 
@@ -81,7 +82,7 @@ The application follows three main user flows:
 - **Help & Support** (`HelpAndSupport`): Expandable FAQs, contact options that open a pre-filled support email, and safety information
 
 ### 5. Secure Communication & Return Flow
-- **Chat Screen**: Encrypted real-time messaging between users, launched from an item's details or from Chats. The header shows the other student's name and "About: {item name}"
+- **Chat Screen**: Private real-time messaging between users, launched from an item's details or from Chats. The header shows the other student's name and "About: {item name}"
 - **Handover**: After meeting, the student who is *not* the reporter taps **Confirm handover** (once, can't be undone)
 - **Return**: The reporter's **Mark as returned** button unlocks only after that confirmation. Marking it returned updates the item, shows a "Returned" banner, and makes the chat read-only
 - **Confirmation Screen**: "Item returned" confirmation with what happens next and safety tips
@@ -91,12 +92,13 @@ The application follows three main user flows:
 
 ### Frontend Framework
 - **React Native**: Cross-platform mobile development framework
-- **Expo**: Development platform including the image picker (`expo-image-picker`) and local notifications (`expo-notifications`)
+- **Expo**: Development platform including the image picker (`expo-image-picker`) and push notifications (`expo-notifications` + Expo's push service)
 
 ### Backend & Database
 - **Firebase Authentication**: Email/password accounts, verification links, and password-reset emails
 - **Cloud Firestore**: Real-time data for users, items, chats and messages, protected by `firestore.rules`
 - **Cloudinary**: Image hosting for item photos (unsigned upload preset)
+- **Cloud Functions for Firebase**: `functions/index.js` — `notifyOnNewMessage` sends chat push notifications
 - **firebase/auth**: `onIdTokenChanged` listener for live auth state management
 
 ### Navigation
@@ -105,8 +107,8 @@ The application follows three main user flows:
 - **@react-navigation/bottom-tabs**: Bottom tab navigation for the main app (Browse / Chats / You)
 
 ### Storage & Security
-- **AsyncStorage**: Local persistent storage (`@react-native-async-storage/async-storage`) — login session, theme choice, and per-user privacy settings
-- **CryptoJS**: Client-side message encryption
+- **AsyncStorage**: Local persistent storage (`@react-native-async-storage/async-storage`) — login session, theme choice, onboarding state, and per-user privacy settings
+- **CryptoJS**: Only used to read messages sent by older app versions, which were AES-encrypted with a key derived in the app
 
 ### Development Environment
 - **JavaScript ES6+**: Modern JavaScript features and syntax
@@ -161,36 +163,26 @@ The process is illustrated beginning on the left side of the diagram.
    npm install
    ```
 
-3. **Configure Firebase**  
-   Create a `firebaseConfig.js` file in the project root with your Firebase project credentials. It must export both `auth` and `db`, because the files in `backend/` import both:
-   ```js
-   import { initializeApp } from 'firebase/app';
-   import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
-   import { getFirestore } from 'firebase/firestore';
-   import AsyncStorage from '@react-native-async-storage/async-storage';
+3. **Configure Firebase and Cloudinary**  
+   Copy `.env.example` to `.env` and fill in your Firebase web-app credentials (Firebase Console → Project Settings → General → Your apps) and your Cloudinary cloud name and unsigned upload preset. `.env` is git-ignored; `firebaseConfig.js` and `cloudinaryConfig.js` read the values from it. Restart with `npx expo start --clear` after changing it.
 
-   const firebaseConfig = {
-     apiKey: "YOUR_API_KEY",
-     authDomain: "YOUR_AUTH_DOMAIN",
-     projectId: "YOUR_PROJECT_ID",
-     storageBucket: "YOUR_STORAGE_BUCKET",
-     messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-     appId: "YOUR_APP_ID"
-   };
-
-   const app = initializeApp(firebaseConfig);
-   const auth = initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
-   const db = getFirestore(app);
-
-   export { auth, db };
-   export default app;
-   ```
+   > `EXPO_PUBLIC_*` values are compiled into the app, so anyone with the app can read them — they are identifiers, not secrets. Protect the project with the Firestore rules, by restricting the API key to your app in Google Cloud Console → APIs & Services → Credentials, by enabling Firebase App Check, and by limiting the Cloudinary upload preset (allowed formats, maximum file size, fixed folder).
 
 4. **Publish the Firestore security rules**  
-   Copy the contents of `firestore.rules`, then in the Firebase console go to **Firestore Database → Rules**, paste over the existing rules, and click **Publish**. The app expects these rules: without them, sign-up profile writes and the handover/return flow will not behave as described.
+   Copy the contents of `firestore.rules`, then in the Firebase console go to **Firestore Database → Rules**, paste over the existing rules, and click **Publish** (or run `firebase deploy --only firestore:rules`). The app expects these rules: without them, sign-up profile writes and the handover/return flow will not behave as described.
 
-5. **Configure Cloudinary**  
-   Fill in `CLOUDINARY_CLOUD_NAME` and `CLOUDINARY_UPLOAD_PRESET` in `cloudinaryConfig.js`.
+5. **Set up push notifications** (optional — the app works without them)
+   1. Link the app to an EAS project so it can get Expo push tokens: `npx eas init` (adds `extra.eas.projectId` to `app.json`).
+   2. Upgrade the Firebase project to the **Blaze** plan (Cloud Functions require it; a campus-sized app stays within the free monthly quota).
+   3. Deploy the function:
+      ```bash
+      npm install -g firebase-tools
+      firebase login
+      cd functions && npm install && cd ..
+      firebase deploy --only functions
+      ```
+      `.firebaserc` points at `campusfinder-b4064`; change it if you use your own project. If your Firestore database is not in the US, set a matching `region` on the function.
+   4. Test on a development or production build (`npx expo run:android` / `eas build`) — Expo Go on Android cannot receive remote push notifications. On Android, push delivery also needs FCM credentials uploaded to EAS (`eas credentials`).
 
 6. **Set the support email**  
    Open `supportConfig.js` and replace `SUPPORT_EMAIL` with the inbox your team monitors. Help & Support and Privacy & Safety send emails there.
@@ -211,17 +203,21 @@ The process is illustrated beginning on the left side of the diagram.
 
 ```
 CampusFinder/
-├── App.js                          # Theme provider, navigation setup & Firebase auth listener
-├── firebaseConfig.js               # Firebase project configuration
-├── cloudinaryConfig.js             # Cloudinary image-upload configuration
+├── App.js                          # Theme provider, navigation, auth listener, onboarding & notification taps
+├── .env.example                    # Template for the git-ignored .env (Firebase & Cloudinary values)
+├── firebaseConfig.js               # Firebase initialisation (reads .env)
+├── cloudinaryConfig.js             # Cloudinary image-upload configuration (reads .env)
+├── firebase.json / .firebaserc     # Firebase CLI config (rules & functions deploys)
+├── functions/
+│   └── index.js                    # notifyOnNewMessage — chat push notifications
 ├── supportConfig.js                # Support email address
 ├── index.js                        # App entry point
 ├── assets/                         # App icons, splash screen, and images
 ├── backend/
 │   ├── authService.js              # Sign up / login / verification / password reset / account deletion
-│   ├── chatService.js              # Chat creation, encrypted messaging, handover confirmation, subscriptions
-│   ├── itemsService.js             # Item CRUD, live subscriptions, categories, status & mark-as-returned
-│   ├── notificationService.js      # Local chat-message notifications & badge
+│   ├── chatService.js              # Chat creation, messaging, handover confirmation, subscriptions
+│   ├── itemsService.js             # Item CRUD, paginated live feed, counts, status & mark-as-returned
+│   ├── notificationService.js      # Push-token registration, foreground handling, taps & badge
 │   ├── settingsService.js          # Per-user privacy settings (AsyncStorage)
 │   ├── storageService.js           # Cloudinary image uploads
 │   └── supportService.js           # Opens pre-filled support emails
@@ -290,6 +286,7 @@ Written at sign-up and updated when the email is verified. Each user can only re
 | `name`, `email` | From the sign-up form |
 | `emailVerified` | Kept in sync for reference only — access control uses the ID token's `email_verified` claim |
 | `createdAt` | Server timestamp |
+| `expoPushTokens` | Expo push tokens of the user's signed-in devices; read by the Cloud Function, removed on logout |
 
 ### `items/{itemId}`
 
@@ -315,11 +312,11 @@ Older reports still work: a missing `status` or legacy `Open` counts as `open`, 
 | `participantNames` | `{ uid: name }` for both participants |
 | `reporterUid` | uid of the item's reporter |
 | `itemId`, `itemName` | The item the chat is about |
-| `lastMessage`, `lastMessageTime` | Encrypted preview and time of the latest message |
+| `lastMessage`, `lastMessageTime` | Preview and time of the latest message |
 | `handover` | `{ confirmedBy, confirmedAt }` — set once by the non-reporter after the item changes hands |
 | `createdAt` | Server timestamp |
 
-Messages live in `chats/{chatId}/messages` with `text` (encrypted), `senderId`, `senderName` and `timestamp`. They cannot be edited or deleted.
+Messages live in `chats/{chatId}/messages` with `text`, `senderId`, `senderName` and `timestamp`. They cannot be edited or deleted. Messages from older app versions are AES ciphertext and are decoded when displayed.
 
 
 
@@ -329,7 +326,7 @@ Messages live in `chats/{chatId}/messages` with `text` (encrypted), `senderId`, 
 - **Firebase Authentication**: Secure email/password auth with an email verification gate in the app
 - **Verification Enforced Server-side**: Firestore rules require a verified email (`email_verified` token claim) for every read and write on items, chats and messages
 - **Private Profiles**: A user can only read and write their own `users` document; profiles cannot be deleted
-- **Encrypted Communication**: Messages secured with CryptoJS before transmission
+- **Private Communication**: Messages are encrypted in transit (TLS) and at rest by Firestore, and rules restrict them to the two participants. They are **not** end-to-end encrypted — project administrators with console access can read them
 - **Privacy Protection**: User information is kept confidential; emails are never shown publicly
 - **Anonymous Reporting**: Option to post new reports as "Anonymous"
 - **Owner-only Changes**: Firestore rules let only the reporter edit or delete their item
@@ -342,7 +339,8 @@ Messages live in `chats/{chatId}/messages` with `text` (encrypted), `senderId`, 
 
 ## 🎯 Future Enhancements
 
-- [ ] Remote push notifications for new items and matches (today only local notifications for chat messages exist)
+- [x] Remote push notifications for chat messages
+- [ ] Push notifications for new items and matches
 - [ ] Advanced search and filtering options
 - [ ] User rating and feedback system
 - [ ] Integration with university security

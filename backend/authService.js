@@ -11,6 +11,7 @@
  *     email:         string,
  *     emailVerified: boolean,
  *     createdAt:     Timestamp,
+ *     expoPushTokens: string[]  (devices that receive chat pushes),
  *   }
  */
 
@@ -35,6 +36,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '../firebaseConfig';
 import { deleteItemsByUser } from './itemsService';
+import { unregisterPushToken } from './notificationService';
 
 // ─── Register ─────────────────────────────────────────────────────────────────
 
@@ -44,7 +46,7 @@ import { deleteItemsByUser } from './itemsService';
  * keeps the link valid without requiring deep-link / custom domain setup.
  */
 const ACTION_CODE_SETTINGS = {
-  url: 'https://campusfinder-b4064.firebaseapp.com',
+  url: `https://${process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN}`,
   handleCodeInApp: false,
 };
 
@@ -158,8 +160,14 @@ export const checkEmailVerified = async () => {
 
 // ─── Logout ───────────────────────────────────────────────────────────────────
 
-/** Sign the current user out. */
-export const logoutUser = async () => signOut(auth);
+/**
+ * Sign the current user out. The device's push token is removed first so this
+ * device stops receiving their chat notifications.
+ */
+export const logoutUser = async () => {
+  if (auth.currentUser) await unregisterPushToken(auth.currentUser.uid);
+  await signOut(auth);
+};
 
 // ─── Account security ─────────────────────────────────────────────────────────
 
